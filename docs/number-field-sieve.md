@@ -370,8 +370,8 @@ sub-exponential growth in action.
 ## 12. The discrete-logarithm variant
 
 The same framework solves the **discrete logarithm problem** (DLP) in
-$\mathbb{F}_p^{\*}$ (and extension fields), which underlies Diffie–Hellman and
-DSA. The structure is identical — polynomial selection, sieving for smooth
+$\mathbb{F}_p^{\times}$ (and extension fields), which underlies Diffie–Hellman
+and DSA. The structure is identical — polynomial selection, sieving for smooth
 relations, linear algebra — but with two changes:
 
 - Relations become **linear equations among logarithms** of factor-base
