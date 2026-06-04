@@ -119,6 +119,14 @@ Full details with rationale: [`CHANGELOG.md`](CHANGELOG.md). The repository also
 includes a [`CLAUDE.md`](CLAUDE.md) with build/test/run notes and the complete
 modernization record.
 
+## How it works
+
+For a mathematical explanation of the Number Field Sieve — the
+congruence-of-squares idea, the two-polynomial number-field construction,
+smoothness and sieving, the $\mathbb{F}_2$ linear algebra, the algebraic square
+root, complexity, and how each phase maps to the directories in this tree — see
+[**`docs/number-field-sieve.md`**](docs/number-field-sieve.md).
+
 ## License
 
 CADO-NFS is free software under the **GNU Lesser General Public License,
