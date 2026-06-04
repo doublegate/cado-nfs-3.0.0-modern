@@ -1,0 +1,69 @@
+Using CADO-NFS for DLP in large characteristic fields.
+------------------------------------------------------
+
+**** Basic usage: DLP in GF(p)
+
+The cado-nfs.py script can be used to compute discrete logarithms in a
+prime field GF(p). For example, to compute the discrete logarithm in GF(p)
+modulo the factor 101538509534246169632617439 of p-1 of the target
+92800609832959449330691138186 with p=191907783019725260605646959711:
+
+$ ./cado-nfs.py -dlp -ell 101538509534246169632617439 target=92800609832959449330691138186 191907783019725260605646959711
+
+In principle, just typing
+  ./cado-nfs.py -dlp -ell <ell> target=<target> <p>
+should compute the discrete logarithm of <target> modulo <ell> in
+GF(<p>). Right now, there are parameters only for primes p of around 30,
+60, 100 or 155 digits (to be checked in params_dl/ subdirectory). If no
+target is given, then the output is a file containing the virtual
+logarithms of all the factor base elements.
+
+More flexibility is possible. An example of parameter file is given in
+parameters/dlp/param.p60. Compared to parameter files for integer
+factorization, the main difference is that the lines related
+to characters and sqrt disappear and that there is an additional block of
+parameters related to individual logarithms.
+
+After the computation is finished, it is possible to run again the
+cado-nfs.py script, with a different target: only the last step will be
+run. For ensuring that the precomputed data is really used, copy-paste
+the command-line indicated in the output of the first computation that
+contains "If you want to compute a new target…", and set the new target at the
+end.
+
+Important note: the logarithms are given in an arbitrary (unknown) base.
+If you want to define them with respect to a specific generator g, then
+you'll have to compute the logarithm of g and then divide all the logs by
+this value.
+
+**** Using non-linear polynomials
+
+Just like for factorization, it is possible to use two non-linear
+polynomials for DLP. However, the polynomial selection is not automatic
+in that case: the user must provide the polynomial file. Also, the
+current descent script will not work.
+
+See README.nonlinear for an example of importing a polynomial file with 2
+non-linear polynomials.
+
+An important issue is that since the descent is not yet functional
+for this case, the script has no way to check the results if there is no
+linear polynomial. A good idea is to set
+  tasks.reconstructlog.partial = false
+so that many consistency checks are performed while using all the
+relations that were deleted during the filter.
+
+**** Discrete logarithms in GF(p^k) for small k
+
+The algorithm works "mutatis mutandis" for discrete logarithm computations
+in GF(p^k). The only difference is that the two polynomials must have a
+common irreducible factor of degree k over GF(p). Polynomial selection
+for this case is not yet included, so you must build them by yourself,
+based on constructions available in the literature. Also the individual
+logarithm has to be implemented for that case.
+
+For DLP in GF(p^2), things are sligthly more integrated:
+  ./cado-nfs.py <p> -dlp -ell <ell> -gfpext 2
+should work for p = 7 mod 8, provided that a parameter file is available
+for the size of p (at the time of writing this doc, only p of 20 decimal
+digits is supported).

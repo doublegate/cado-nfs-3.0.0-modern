@@ -1,0 +1,52 @@
+name: Build or runtime problem
+description: A build failure or runtime error in this modernization fork
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. This fork only modernizes upstream CADO-NFS 2.3.0
+        for current toolchains. **Algorithm bugs, feature requests, and general
+        CADO-NFS questions belong [upstream](https://gitlab.inria.fr/cado-nfs/cado-nfs).**
+        Use this form for build failures or runtime errors caused by toolchain
+        or OS compatibility.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you run, and what went wrong? Paste the first error verbatim.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, and versions of the toolchain.
+      value: |
+        - OS / distro:
+        - Compiler (gcc/clang --version):
+        - CMake (cmake --version):
+        - Python (python3 --version):
+        - GMP version:
+        - hwloc version:
+        - OpenSSL version:
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / tag
+      description: Output of `git rev-parse --short HEAD` (or the release tag).
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: This is a build/runtime/compatibility issue, not an upstream algorithm bug.
+          required: true
+        - label: GMP is installed with shared libraries (`--enable-shared`).
+          required: false

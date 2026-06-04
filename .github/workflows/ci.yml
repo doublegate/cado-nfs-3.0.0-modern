@@ -1,0 +1,67 @@
+name: CI
+
+# Build CADO-NFS 2.3.1-modern on current toolchains and prove it factors a
+# number end-to-end. This validates the modernization patches (CMake 4 / GCC /
+# hwloc 2 / OpenSSL 3 / Python 3 compatibility) on stock GitHub runners.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-factor:
+    name: build + smoke factor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libgmp-dev libhwloc-dev python3 perl
+
+      - name: Tool versions
+        run: |
+          gcc --version | head -1
+          cmake --version | head -1
+          python3 --version
+          echo "GMP: $(dpkg -s libgmp-dev 2>/dev/null | sed -n 's/^Version: //p')"
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Unit tests (fast subset)
+        run: |
+          cd "build/$(hostname)"
+          ctest --output-on-failure -R 'test_bitlinalg|sievetest_I|numbertheory'
+
+      - name: Smoke factorization (59-digit, HTTPS)
+        run: |
+          OUT=$(./cado-nfs.py 90377629292003121684002147101760858109247336549001090677693 -t 2)
+          echo "Factors: $OUT"
+          python3 - "$OUT" <<'PY'
+          import sys
+          N = 90377629292003121684002147101760858109247336549001090677693
+          factors = [int(x) for x in sys.argv[1].split()]
+          prod = 1
+          for f in factors:
+              prod *= f
+          assert prod == N, f"product {prod} != N {N}"
+          assert all(pow(2, f - 1, f) == 1 for f in factors), "a factor is composite"
+          print(f"OK: {len(factors)} prime factors, product == N")
+          PY

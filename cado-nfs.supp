@@ -1,0 +1,86 @@
+# This is a suppression file for valgrind
+
+# In order to generate it, re-run valgrind as follows:
+# valgrind --leak-check=full --gen-suppressions=all ./my_program arg1 # arg2 ... 
+# The "..." joker matches several possible lines in the call trace.
+
+{
+   hwloc_is_known_to_leak_a_bit_mangled_names
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:malloc
+   ...
+   fun:hwloc_topology_init
+   fun:_ZN9cpubinderC1ERSo
+   fun:cpubinding_get_info
+   fun:pi_init_mpilevel
+}
+
+{
+   hwloc_is_known_to_leak_a_bit_unmangled_names
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:malloc
+   ...
+   fun:hwloc_topology_init
+   fun:cpubinder
+   fun:cpubinding_get_info
+   fun:pi_init_mpilevel
+   fun:pi_go_inner_not_interleaved
+}
+{
+   openmp_leak
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   fun:allocate_dtv
+   fun:_dl_allocate_tls
+   fun:allocate_stack
+   fun:pthread_create*
+   ...
+   fun:GOMP_parallel
+   ...
+   fun:main
+}
+# The one below is without openmp. So maybe openmp is innocent. I haven't
+# really investigated whether there's a code path which fails to properly
+# join() all threads. However, if there were, then one would not expect
+# openmp to leak similarly. So I'm skeptical. It's probably the glibc's
+# fault.
+{
+   another_one_quite_similar_to_the_previous_leak
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   fun:allocate_dtv
+   fun:_dl_allocate_tls
+   fun:allocate_stack
+   fun:pthread_create*
+   ...
+   fun:filter_rels
+   ...
+   fun:main
+}
+{
+   ok_there_is_an_annoying_error_with_glibc_2_22_which_seems_hard_to_reproduce_but_let_us_write_a_suppression_for_it
+   Memcheck:Cond
+   fun:index
+   fun:expand_dynamic_string_token
+   fun:fillin_rpath
+   ...
+   obj:/lib/x86_64-linux-gnu/ld-2.22.so
+   ...
+}
+{
+   another_one_of_the_stop_bothering_me_kind
+   Memcheck:Cond
+   fun:index
+   fun:expand_dynamic_string_token
+   ...
+   fun:do_preload
+   fun:dl_main
+   ...
+   obj:/lib/x86_64-linux-gnu/ld-2.22.so
+   ...
+}
+

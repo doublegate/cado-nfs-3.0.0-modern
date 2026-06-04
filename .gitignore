@@ -1,0 +1,56 @@
+# --- CADO-NFS build artifacts (out-of-tree, per-hostname) ---
+/build/
+build/
+/installed/
+/cmake-installed/
+cmake-companion*/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.a
+*.so
+*.so.*
+*.lo
+*.la
+
+# --- gf2x autotools artifacts (bundled sub-project) ---
+gf2x/config.log
+gf2x/config.status
+gf2x/Makefile
+gf2x/libtool
+gf2x/**/.deps/
+gf2x/**/.libs/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Runtime / computation output ---
+*.parameters_snapshot.*
+*.server.cert
+*.server.cert.config
+/tmp-cado/
+core
+core.*
+
+# --- Local configuration secrets / machine-specific overrides ---
+# NOTE: local.sh IS committed in this fork because it carries the portable
+# modern-toolchain build flags (see README / CLAUDE.md). Ignore personal Claude
+# state and local agent tooling (kept locally, not published).
+CLAUDE.local.md
+.claude/
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
