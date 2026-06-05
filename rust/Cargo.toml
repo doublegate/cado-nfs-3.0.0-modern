@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["cado-nfs-client"]
+
+# Rust orchestration layer for CADO-NFS (Phase 4 of the 3.0.0-modern fork).
+# The work-unit protocol is the existing Python one (scripts/cadofactor/
+# api_server.py + workunit.py), so these binaries interoperate with the stock
+# Python server/driver. See docs/rust-orchestration.md.

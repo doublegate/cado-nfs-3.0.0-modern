@@ -6,3 +6,6 @@
 # Python bytecode caches from the orchestration layer
 __pycache__/
 *.pyc
+
+# Rust build output
+/rust/target/
