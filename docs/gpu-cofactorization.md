@@ -145,26 +145,48 @@ backend; the remaining work is integration + refinement.
      - **`-t` did not multi-thread this workload** (`threadpool of 1 threads`),
        so CPU/GPU overlap could not be exercised — but the ~7.5 % ceiling caps
        the win regardless of overlap.
-   - ⏳ **Where it *would* win (scoped follow-on).** A regime where cofactoring
-     is a large CPU fraction needs **substantially larger cofactors** — a c140+
-     composite and/or a much higher `mfb` so survivors carry genuinely hard
-     (≫ 64-bit) cofactors that cost many CPU ECM curves. That requires
-     integrating the **128-bit GPU ECM path** (already validated standalone in
-     `bench/gpu-mont128.cu`) into `gpu_ecm::cofac_batch` (today's bridge is the
-     64-bit `< 2^62` path), plus reducing launch count (accumulate cofactors
-     across bucket regions / per-thread CUDA streams) and real `-t N` threading
-     for overlap. The infrastructure here (validated, correct, tunable, behind a
-     flag) is the foundation for that; the win itself is gated on the 128-bit
-     integration and a larger target number, and is Amdahl-bounded even then.
+   - ✅ **128-bit GPU ECM path integrated** (`gpu_ecm::factor_batch_128`,
+     `gpu_ecm.cu`): the validated 64-bit ladder/stage-1/stage-2-BSGS structure
+     re-expressed over the bit-exact 2-limb CIOS `montmul128`
+     (`bench/gpu-mont128.cu`), for odd cofactors `< 2^126`. The bridge
+     (`gpu_cofac.cpp`) now routes by width: `< 2^61` → `factor_batch`,
+     `[2^61, 2^125)` → `factor_batch_128`. **Validated** on the c120 poly forced
+     to `mfb1=90 lpb1=31` (so side-1 cofactors reach ~90 bits): isolating the
+     128-bit path (`MINBITS=62`) it split **397 355** real ≥62-bit cofactors with
+     **−0 lost** vs CPU-only; both paths together **−0 lost** — a clean valid
+     superset (`bench/gpu-cofac-128-bench.sh`).
+   - ✅ **First net throughput win, in the heavy-cofactoring regime.** Same
+     `mfb1=90` regime, where CPU cofactoring is **78 % of `las` CPU time**
+     (`factor 56.4 / 71.7 s`) — exactly the regime the 128-bit path unlocks.
+     `random-sample 40`, `-t 1`:
+
+     | config | wall | rel | **rel/wall** |
+     |---|---|---|---|
+     | CPU-only | 72 s | 12 911 | 179 |
+     | **batch, MINBITS=0** | 181 s | 35 629 | **197** (+10 %) |
+     | batch, MINBITS=62 | 163 s | 25 989 | 160 |
+
+     Batch delivers **+10 % relations/second** — the GPU offloads the dominant
+     cofactoring cost and, with its larger curve budget, cracks ~2.8× more
+     cofactors (3-large-prime relations `facul` abandons). Note `MINBITS=0`
+     (send *everything* to the GPU) wins here and targeting *hurts* — the
+     opposite of the light c120 regime — because when cofactoring dominates you
+     want maximal CPU offload, not to hand the easy cofactors back to the CPU.
+   - ⏳ **To widen the win:** the GPU still re-runs `facul` on the divided
+     remainder (batch CPU `factor` is still 76 s) — having the GPU return the
+     *complete* small-prime factorization (so smooth cofactors bypass `facul`
+     entirely) plus per-thread CUDA streams + real `-t N` overlap are the next
+     levers. On stock c120 the ~7.5 % Amdahl ceiling still applies — the win is
+     specific to large-`mfb`/3LP regimes (c175-class), which is where it matters.
 5. ✅ **Full in-CADO CUDA build works.** With `-DENABLE_GPU=ON`
    `-DCMAKE_CUDA_ARCHITECTURES=86`, `gpu_ecm.cu` compiles under `nvcc` inside
    CADO's C++20/`-Werror` build (no flag conflicts), `gpu_cofac.cpp` compiles,
    and the **entire suite** (`polyselect`, `las`, `makefb`, `purge`, `merge`,
    `bwc`, `sqrt`, …) builds; `las` links `libcudart` with the
    `gpu_ecm::{available,factor_batch,cofac_batch}` symbols present and the hook
-   live (per-call `shadow`/`salvage` and the per-region `batch` drain). ⏳
-   Remaining: make `batch` a net win via hard-cofactor targeting + the parameter
-   regime-shift + async overlap (item 4).
+   live (per-call `shadow`/`salvage` and the per-region `batch` drain, 64- and
+   128-bit). ✅ `batch` is a **net win (+10 % rel/wall) in the heavy/large-`mfb`
+   regime**; on light c120 it is Amdahl-bound (item 4).
 
 ## Status
 
@@ -183,12 +205,15 @@ backend; the remaining work is integration + refinement.
 - ✅ **Batched per-region drain implemented & validated** (`CADO_GPU_ECM=batch`):
   one GPU launch per bucket region, hint divided out before `facul`; a clean
   valid superset (26645 vs 17986 relations, −0 lost on the c120 slice).
-- ⚠️ **Honest throughput finding**: GPU cofactor offload **cannot win on c120**
-  on this box. Cofactoring is intrinsically ~7.5 % of CPU (measured from `las`'s
-  own breakdown) and **no knob raises it** — `-ncurves 4` vs `100` leaves
-  `factor` at 0.3 s, because c120's small cofactors crack in a few curves.
-  Hard-cofactor targeting (`CADO_GPU_MINBITS`) cut batch wall 122 s → 56 s but
-  still trails CPU-only (436 vs 657 rel/wall). A real win needs a c140+ / high-
-  `mfb` regime where cofactors are genuinely hard, which requires integrating the
-  validated **128-bit GPU ECM path** into `cofac_batch` — Amdahl-bounded even
-  then. The infrastructure (correct, tunable, flag-gated) is the foundation.
+- ✅ **128-bit GPU ECM path integrated & validated** (`factor_batch_128`):
+  odd cofactors `< 2^126` over the bit-exact 2-limb `montmul128`; the bridge
+  routes by width. On the c120 poly forced to `mfb1=90` it split 397 355 real
+  ≥62-bit cofactors with −0 lost (valid superset).
+- ✅ **First net throughput win**: in the heavy/large-`mfb` regime (`mfb1=90`,
+  cofactoring 78 % of CPU) batch reaches **197 rel/wall vs CPU-only 179 (+10 %)**
+  with `MINBITS=0`. Confirms the thesis — GPU cofactor offload pays off once
+  cofactoring dominates CPU, which the 128-bit path is what enables.
+- ⚠️ **On light c120 it cannot win**: cofactoring is intrinsically ~7.5 % of CPU
+  (`las` breakdown) and no knob raises it (`-ncurves 4` vs `100` → `factor` 0.3 s),
+  so the Amdahl ceiling dominates. The win is specific to large-`mfb`/3LP
+  (c175-class) regimes — which is where GPU cofactorization matters in practice.

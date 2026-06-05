@@ -10,18 +10,10 @@
 
 namespace gpu_ecm {
 
-/* GPU ECM here handles a single odd word in [3, 2^62). Wider cofactors and
- * primes are left to the CPU path. (A 128-bit path — validated in
- * bench/gpu-mont128.cu — is the documented extension for larger mfb.) */
-static bool eligible(cxx_mpz const & c, uint64_t & out)
-{
-    if (mpz_sizeinbase(c.x, 2) > 61) return false;     /* must fit < 2^62 */
-    if (mpz_cmp_ui(c.x, 2) <= 0) return false;         /* > 2 */
-    if (mpz_even_p(c.x)) return false;                 /* odd (Montgomery) */
-    out = mpz_get_uint64(c.x);
-    return true;
-}
-
+/* Cofactors are routed by size: odd values < 2^61 go to the single-word
+ * factor_batch; odd values in [2^61, 2^125) go to the 2-limb factor_batch_128
+ * (mfb > 62, e.g. c175's mfb1=90). Even values, <= 2, and >= 2^125 are left to
+ * the CPU path (result stays 1). */
 std::vector<cxx_mpz> cofac_batch(std::vector<cxx_mpz> const & cofactors,
                                  int ncurves, unsigned long B1, unsigned long B2)
 {
@@ -31,23 +23,45 @@ std::vector<cxx_mpz> cofac_batch(std::vector<cxx_mpz> const & cofactors,
 
     if (M == 0 || !available()) return result;
 
-    /* gather the eligible single-word cofactors, remembering their positions */
-    std::vector<uint64_t> mod;
-    std::vector<size_t>   idx;
-    mod.reserve(M); idx.reserve(M);
+    /* gather, remembering each cofactor's position, split by word width */
+    std::vector<uint64_t> mod64;   std::vector<size_t> idx64;
+    std::vector<uint64_t> lo128, hi128; std::vector<size_t> idx128;
     for (size_t i = 0; i < M; i++) {
-        uint64_t w;
-        if (eligible(cofactors[i], w)) { mod.push_back(w); idx.push_back(i); }
+        mpz_srcptr c = cofactors[i].x;
+        if (mpz_cmp_ui(c, 2) <= 0 || mpz_even_p(c)) continue;   /* >2 and odd */
+        size_t const bits = mpz_sizeinbase(c, 2);
+        if (bits <= 61) {
+            mod64.push_back(mpz_get_uint64(c)); idx64.push_back(i);
+        } else if (bits <= 125) {
+            cxx_mpz hi, lo;
+            mpz_fdiv_q_2exp(hi.x, c, 64);                       /* c >> 64 */
+            mpz_fdiv_r_2exp(lo.x, c, 64);                       /* c & (2^64-1) */
+            lo128.push_back(mpz_get_uint64(lo.x));
+            hi128.push_back(mpz_get_uint64(hi.x));
+            idx128.push_back(i);
+        }
     }
-    if (mod.empty()) return result;
 
-    /* one GPU launch over the whole batch */
-    std::vector<uint64_t> fac;
-    factor_batch(mod, ncurves, B1, B2, fac);
-
-    /* scatter found factors back to their cofactor positions */
-    for (size_t k = 0; k < idx.size(); k++)
-        if (fac[k] > 1) mpz_set_uint64(result[idx[k]].x, fac[k]);
+    /* one GPU launch per width over the whole batch */
+    if (!mod64.empty()) {
+        std::vector<uint64_t> fac;
+        factor_batch(mod64, ncurves, B1, B2, fac);
+        for (size_t k = 0; k < idx64.size(); k++)
+            if (fac[k] > 1) mpz_set_uint64(result[idx64[k]].x, fac[k]);
+    }
+    if (!lo128.empty()) {
+        std::vector<uint64_t> flo, fhi;
+        factor_batch_128(lo128, hi128, ncurves, B1, B2, flo, fhi);
+        for (size_t k = 0; k < idx128.size(); k++) {
+            if (flo[k] == 0 && fhi[k] == 0) continue;           /* no factor */
+            cxx_mpz f, lo;
+            mpz_set_uint64(f.x, fhi[k]);
+            mpz_mul_2exp(f.x, f.x, 64);
+            mpz_set_uint64(lo.x, flo[k]);
+            mpz_add(f.x, f.x, lo.x);
+            if (mpz_cmp_ui(f.x, 1) > 0) mpz_set(result[idx128[k]].x, f.x);
+        }
+    }
 
     return result;
 }
