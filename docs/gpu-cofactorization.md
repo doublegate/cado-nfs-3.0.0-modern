@@ -89,14 +89,24 @@ backend; the remaining work is integration + refinement.
      returns a found factor per cofactor (1 = none → CPU path). Plain C++ (GMP),
      calls the validated `gpu_ecm::factor_batch`; **syntax-checks clean against
      CADO headers**; built into the `facul` library.
-   - ⏳ **Drain wiring** — call `cofac_batch` over the drained batch at
-     `las.cpp:~997`, pre-divide each cofactor by its GPU factor, then let the
-     existing per-survivor cofactoring finish the (smaller) remainder so the
-     relation-emission path is unchanged. This is delicate concurrent surgery
-     and must be validated in a live run (next).
-5. ⏳ **Full in-CADO CUDA build + live-factorization validation** (relations
-   identical) + retune `ncurves`/`mfb`/B2 to exploit the cheap cofactorization
-   (where the real systemic speedup is realized).
+   - ⏳ **Drain wiring** — the deferred-cofactoring flow: survivors are created
+     in `sieve/las-process-bucket-region.cpp:~567`, transferred to
+     `ws.cofac_candidates` (`:~779`), then dispatched as per-survivor
+     `detached_cofac` tasks (`sieve/las-detached-cofac.cpp`). A correct, batched
+     hook accumulates the queued `cofac_candidates`, calls `cofac_batch` once,
+     pre-divides each cofactor by its GPU factor, then lets the existing
+     per-survivor cofactoring finish the (smaller) remainder — so relation
+     emission is byte-for-byte unchanged. This restructures a multithreaded hot
+     path and MUST be validated relations-identical in a live run; it is the
+     remaining focused follow-on (a per-survivor hook would be a regression and
+     is not worth wiring).
+5. ✅ **Full in-CADO CUDA build works.** With `-DENABLE_GPU=ON`
+   `-DCMAKE_CUDA_ARCHITECTURES=86`, `gpu_ecm.cu` compiles under `nvcc` inside
+   CADO's C++20/`-Werror` build (no flag conflicts), `gpu_cofac.cpp` compiles,
+   and `las` links `libcudart` with the `gpu_ecm::{available,factor_batch,
+   cofac_batch}` symbols present. The CUDA-enabled `las` runs correctly
+   (microbench unchanged at ~11.7 s). ⏳ Remaining: the drain wiring (item 4) +
+   live-factorization validation + `ncurves`/`mfb`/B2 retuning.
 
 ## Status
 
