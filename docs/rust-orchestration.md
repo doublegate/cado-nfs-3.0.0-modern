@@ -134,7 +134,7 @@ schema, driving the same Rust client that also runs against the Python server.
 
 ## Robustness features (all validated)
 
-`rust/robustness-test.sh` exercises the production-hardening features — **8/8
+`rust/robustness-test.sh` exercises the production-hardening features — **13/13
 pass**:
 
 - **Server, stale-work reassignment** — a background task returns ASSIGNED rows
@@ -154,6 +154,14 @@ pass**:
   the server's certificate hashes to the pinned value (verified: correct pin
   connects over TLS; a wrong pin is rejected). Plus `--insecure` / `--cafile`.
 - **Client `--niceness`** renices children; downloads take an advisory `flock`.
+- **Server IP whitelist** — `--whitelist <ip|cidr,…>` (matching `api_server.py`'s
+  `api_limit_remote_addr`): empty allows all, otherwise the peer IP must fall in
+  one of the IPv4/IPv6 exact-or-CIDR entries, else `403` (verified: a non-loopback
+  whitelist blocks loopback, a loopback whitelist admits it).
+- **Client `STDIN<n>` redirection** — if a work-unit declares a `STDIN<n>` file
+  for command *n*, the client opens it and feeds it to the child's stdin (verified
+  end-to-end: payload flows `STDIN0 → /bin/cat → uploaded STDOUT0`). The stock
+  Python client never implemented this; the Rust client does.
 
 ## Deployment: a real factorization, driven entirely by Rust clients
 
@@ -207,22 +215,51 @@ not (now all fixed in `cado-wu-server-rs`):
    index (from `fileinfo`), which the driver reads as `int(files.command)` when
    collecting stdio.
 
+### Whitelist + TLS through the swap (both validated)
+
+The shim now passes the driver's `server.whitelist` through to the Rust server's
+`--whitelist` (resolving hostnames to IPs, always admitting loopback), so the
+IP allow-list is enforced by the Rust process itself rather than bypassed.
+`server-swap-test.sh` runs with it active (`--whitelist 127.0.0.1,…,::1`).
+
+TLS is wired end-to-end. With the default `server.ssl=yes`, the shim generates
+the same self-signed cert the Python server would (`cadofactor_tools.certificate.
+create_certificate`, SAN augmented with `127.0.0.1`/`::1` because the Rust server
+binds loopback and the `requests`-based client verifies the hostname against the
+pinned cert), serves it with `--cert/--key`, and reports its SHA1 via
+`get_cert_sha1()` so the stock Python clients pin it exactly as before.
+`rust/server-swap-tls-test.sh`:
+
+```
+cado-nfs.py <N> -t 2   (CADO_RUST_WU_SERVER set, ssl left on)
+→ launch line carries --cert/--key; SERVER_URL https://127.0.0.1:PORT
+→ 16 work-units assigned, 15 results recorded by the Rust server (over TLS)
+→ factors: 260938498861057 588120598053661 760926063870977 773951836515617
+→ cado-nfs.py exit 0   ## PASS
+```
+
 ## Scope
 
 **Implemented & validated end-to-end:**
-- Client (full loop, failover, TLS + cert-pinning, niceness, flock) — live with
-  the Python server (`interop-test.sh`).
+- Client (full loop, failover, TLS + cert-pinning, niceness, flock, `STDIN<n>`
+  redirection) — live with the Python server (`interop-test.sh`).
 - Server (five endpoints, `wudb` assign/result lifecycle, timeout reassignment,
-  `410`, pool, TLS) — with the Rust client (`server-interop-test.sh`,
-  `robustness-test.sh` 8/8).
+  `410`, pool, TLS, IP whitelist) — with the Rust client (`server-interop-test.sh`,
+  `robustness-test.sh` 13/13).
 - A real factorization run entirely by **external Rust clients** against the
   stock cado-nfs.py driver (`deploy-test.sh`).
 - A real factorization run with the **Rust server swapped in** for `api_server.py`,
-  serving the stock Python clients (`server-swap-test.sh`).
+  serving the stock Python clients, over **plain HTTP** (`server-swap-test.sh`)
+  and over **TLS** with cert-pinning + whitelist enforcement
+  (`server-swap-tls-test.sh`).
 
-**Remaining (optional, not blockers):** client `STDIN` redirection (dead in the
-Python client too); the Rust server's IP `whitelist` enforcement (the driver's
-whitelist is bypassed — run on a trusted network); TLS for the in-process swap
-(the shim currently uses `server.ssl=no` — plain HTTP); and porting the
-high-level task DAG (`cadotask.py`), which the plan intentionally leaves in
-Python.
+**Deliberately left in Python:** the high-level task DAG / scheduler
+(`cadotask.py`, ~7.5K LOC). Phase 4's scope is the *network/DB substrate* — the
+work-unit transport, the `wudb` store, the client — which is where Rust buys
+robustness (no GIL, connection pooling, a single static binary) without touching
+the NFS mathematics. `cadotask.py` is the orchestration *logic* (which sub-task
+runs when, with which parameters); porting it is a multi-week effort with no
+robustness or throughput payoff and a large correctness surface, so the plan
+keeps it in Python behind the stable `ApiServer` seam the shim implements. This
+is a scope decision, not an unfinished item — the Rust substrate is complete and
+validated both standalone and swapped into a live `cado-nfs.py` run.

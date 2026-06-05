@@ -15,12 +15,19 @@ the cado-wu-server-rs binary (cadotask.py switches to this class when it is set)
 Only the ApiServer methods the driver actually uses are implemented:
 get_port, serve, shutdown, stop_serving_wus, get_url, get_cert_sha1.
 
-Caveats: serves plain HTTP (use server.ssl=no); the Rust server does not (yet)
-enforce server.whitelist -- run it on a trusted network / loopback.
+TLS: when cado-nfs.py runs with the default server.ssl=yes it passes a
+`cafile`; the shim then generates the same self-signed cert/key the Python
+server would (cadofactor_tools.certificate.create_certificate), hands them to
+the Rust server via --cert/--key, and returns the cert's SHA1 from
+get_cert_sha1 so the clients pin it exactly as before. The cert's SubjectAltName
+is augmented with 127.0.0.1/::1 because the Rust server binds loopback and the
+client (requests, verify=<pinned cert>) checks the hostname against the SAN.
+The IP whitelist is enforced by the Rust server itself (--whitelist).
 """
 
 import logging
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -29,6 +36,14 @@ try:
     import requests
 except ImportError:
     requests = None
+
+try:
+    from cadofactor.cadofactor_tools.certificate import (
+        create_certificate, get_certificate_hash, get_server_alternate_names)
+except ImportError:
+    create_certificate = None
+    get_certificate_hash = None
+    get_server_alternate_names = None
 
 logger = logging.getLogger("ExternalApiServer")
 
@@ -56,11 +71,43 @@ class ExternalApiServer(object):
                 args += ["--wutimeout", str(int(float(timeout_hint)))]
             except (TypeError, ValueError):
                 pass
-        # TLS: the Python server uses a self-signed cert (cafile). The Rust
-        # server needs cert+key; for now this swap supports plain HTTP only.
+        # IP allow-list: resolve hostnames to IPs (the Rust server matches
+        # IP/CIDR), and always admit loopback for local clients/driver.
+        wl = []
+        for w in (whitelist or []):
+            if "/" in w or w.replace(".", "").replace(":", "").isalnum() and not w[0].isalpha():
+                wl.append(w)
+            else:
+                try:
+                    wl.append(socket.gethostbyname(w))
+                except OSError:
+                    wl.append(w)
+        wl += ["127.0.0.1", "::1"]
+        args += ["--whitelist", ",".join(dict.fromkeys(wl))]
+        # TLS: replicate the Python server's self-signed cert so clients pin the
+        # same SHA1. create_certificate writes <cafile> and <cafile>.key and
+        # returns the (cert, key) pair; we serve them from the Rust binary and
+        # report the fingerprint via get_cert_sha1().
+        self.certfile = None
         if cafile:
-            logger.warning("ExternalApiServer: TLS (cafile=%s) not wired; "
-                           "run with server.ssl=no for the Rust server", cafile)
+            if create_certificate is None:
+                logger.warning("ExternalApiServer: cafile=%s given but the "
+                               "certificate helper is unavailable; falling "
+                               "back to plain HTTP", cafile)
+            else:
+                SAN = get_server_alternate_names(serveraddress)
+                # the Rust server binds 127.0.0.1 and reports https://127.0.0.1,
+                # so the cert must cover loopback for the client's hostname check
+                SAN += "IP.98 = 127.0.0.1\nIP.99 = ::1\n"
+                ctx = create_certificate(cafile, self.address, SAN)
+                if ctx is None:
+                    logger.warning("ExternalApiServer: certificate generation "
+                                   "failed; falling back to plain HTTP")
+                else:
+                    self.certfile, keyfile = ctx
+                    args += ["--cert", self.certfile, "--key", keyfile]
+                    logger.info("ExternalApiServer: serving TLS with cert %s",
+                                self.certfile)
 
         logger.info("Launching Rust work-unit server: %s", " ".join(args))
         self.proc = subprocess.Popen(
@@ -128,4 +175,6 @@ class ExternalApiServer(object):
         return self.url
 
     def get_cert_sha1(self):
+        if self.certfile and get_certificate_hash is not None:
+            return get_certificate_hash(self.certfile)
         return None

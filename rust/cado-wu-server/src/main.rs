@@ -47,6 +47,7 @@ struct AppState {
     uploaddir: PathBuf,
     serving: AtomicBool,
     admin_token: Option<String>,
+    whitelist: Vec<String>, // IP/CIDR entries; empty = allow all
 }
 
 #[tokio::main]
@@ -76,6 +77,7 @@ async fn main() -> Result<()> {
         uploaddir: cfg.uploaddir,
         serving: AtomicBool::new(true),
         admin_token: cfg.admin_token,
+        whitelist: cfg.whitelist,
     });
 
     // background: reclaim stale ASSIGNED work-units after --wutimeout
@@ -115,6 +117,7 @@ async fn main() -> Result<()> {
         .route("//upload", post(upload))
         .route("/control", post(control))
         .fallback(fallback_404)
+        .layer(axum::middleware::from_fn_with_state(state.clone(), whitelist_mw))
         .with_state(state);
 
     let addr: std::net::SocketAddr = format!("{}:{}", cfg.addr, cfg.port).parse()?;
@@ -141,13 +144,13 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("loading TLS cert/key {cert:?} {key:?}"))?;
             axum_server::bind_rustls(addr, tls)
                 .handle(handle)
-                .serve(app.into_make_service())
+                .serve(app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .await?;
         }
         _ => {
             axum_server::bind(addr)
                 .handle(handle)
-                .serve(app.into_make_service())
+                .serve(app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .await?;
         }
     }
@@ -182,6 +185,43 @@ async fn hello() -> &'static str {
 async fn fallback_404(method: axum::http::Method, uri: axum::http::Uri) -> Response {
     eprintln!("# 404 no route for {method} {uri}");
     (StatusCode::NOT_FOUND, "no such endpoint").into_response()
+}
+
+// IP allow-list, matching api_server.py's api_limit_remote_addr. Empty list =
+// allow all; otherwise the peer IP must fall in one of the IP/CIDR entries.
+async fn whitelist_mw(
+    State(s): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !s.whitelist.is_empty() && !s.whitelist.iter().any(|e| ip_matches(peer.ip(), e)) {
+        eprintln!("# blocked request from {}", peer.ip());
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    next.run(req).await
+}
+
+fn ip_matches(ip: std::net::IpAddr, entry: &str) -> bool {
+    use std::net::IpAddr;
+    if let Some((addr, prefix)) = entry.split_once('/') {
+        let (Ok(net), Ok(plen)) = (addr.parse::<IpAddr>(), prefix.parse::<u32>()) else {
+            return false;
+        };
+        match (ip, net) {
+            (IpAddr::V4(a), IpAddr::V4(b)) => {
+                let m = if plen >= 32 { u32::MAX } else { !(u32::MAX >> plen) };
+                (u32::from(a) & m) == (u32::from(b) & m)
+            }
+            (IpAddr::V6(a), IpAddr::V6(b)) => {
+                let m = if plen >= 128 { u128::MAX } else { !(u128::MAX >> plen) };
+                (u128::from(a) & m) == (u128::from(b) & m)
+            }
+            _ => false,
+        }
+    } else {
+        entry.parse::<IpAddr>().map(|a| a == ip).unwrap_or(false)
+    }
 }
 
 async fn get_workunit(State(s): State<Arc<AppState>>, body: Bytes) -> Response {
@@ -440,6 +480,7 @@ struct Cfg {
     cert: Option<PathBuf>,
     key: Option<PathBuf>,
     admin_token: Option<String>,
+    whitelist: Vec<String>,
 }
 
 fn parse_args() -> Result<Cfg> {
@@ -453,6 +494,7 @@ fn parse_args() -> Result<Cfg> {
         cert: None,
         key: None,
         admin_token: None,
+        whitelist: vec![],
     };
     let mut have_db = false;
     let mut it = std::env::args().skip(1);
@@ -467,6 +509,12 @@ fn parse_args() -> Result<Cfg> {
             "--cert" => c.cert = it.next().map(PathBuf::from),
             "--key" => c.key = it.next().map(PathBuf::from),
             "--admin-token" => c.admin_token = it.next(),
+            "--whitelist" => {
+                if let Some(v) = it.next() {
+                    c.whitelist
+                        .extend(v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()));
+                }
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "usage: cado-wu-server-rs --db <sqlite> [--filedir DIR] [--uploaddir DIR]\n\

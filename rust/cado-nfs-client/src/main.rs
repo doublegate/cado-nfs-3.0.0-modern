@@ -405,6 +405,16 @@ fn run_commands(s: &Settings, wu: &Workunit) -> Result<(Option<i32>, Option<Stri
         let mut cmd = std::process::Command::new(&argv[0]);
         cmd.args(&argv[1..]);
         set_niceness(&mut cmd, s.niceness);
+        // STDIN<n> redirection: if the WU declares a STDIN file for this command,
+        // feed it on the child's stdin.
+        if let Some(path) = map.get(&format!("STDIN{counter}")) {
+            match std::fs::File::open(path) {
+                Ok(f) => {
+                    cmd.stdin(std::process::Stdio::from(f));
+                }
+                Err(e) => eprintln!("# warning: STDIN{counter} {path}: {e}"),
+            }
+        }
         let out = cmd.output().with_context(|| format!("spawning {}", argv[0]))?;
 
         let so_key = format!("STDOUT{counter}");

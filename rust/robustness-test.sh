@@ -73,5 +73,47 @@ check "wu recorded over TLS (3)" "$(st wu3.db wu0)" 3
 check "wrong certsha1 rejected (nonzero exit)" "$([ $rc -ne 0 ] && echo bad || echo ok)" bad
 kill $S3 2>/dev/null
 
+echo "### 5: server IP whitelist enforcement"
+seed wu5.db 1
+# a non-loopback whitelist must block the loopback peer (403)...
+"$ROOT/$SERVER" --db wu5.db --filedir filedir --uploaddir up5 --whitelist 10.255.255.1 --port 0 >s5.log 2>&1 & S5=$!
+U5=$(url s5.log)
+code=$(curl -s -o /dev/null -w '%{http_code}' "$U5/")
+check "non-loopback whitelist blocks loopback (403)" "$code" 403
+kill $S5 2>/dev/null
+# ...while admitting 127.0.0.1 lets the same request through (200)
+"$ROOT/$SERVER" --db wu5.db --filedir filedir --uploaddir up5b --whitelist 127.0.0.1,::1 --port 0 >s5b.log 2>&1 & S5B=$!
+U5B=$(url s5b.log)
+code=$(curl -s -o /dev/null -w '%{http_code}' "$U5B/")
+check "loopback whitelist admits loopback (200)" "$code" 200
+kill $S5B 2>/dev/null
+
+echo "### 6: client STDIN<n> redirection"
+python3 - wu6.db <<'PY'
+import sqlite3,json,sys
+db=sys.argv[1]; c=sqlite3.connect(db)
+c.executescript("""CREATE TABLE IF NOT EXISTS workunits(wurowid INTEGER PRIMARY KEY ASC UNIQUE NOT NULL,
+ wuid VARCHAR(512) UNIQUE NOT NULL, submitter VARCHAR(512), status INTEGER NOT NULL, wu TEXT NOT NULL,
+ timecreated TEXT,timeassigned TEXT,assignedclient TEXT,timeresult TEXT,resultclient TEXT,
+ errorcode INTEGER,failedcommand INTEGER,timeverified TEXT,retryof INTEGER,priority INTEGER);
+CREATE TABLE IF NOT EXISTS files(filesrowid INTEGER PRIMARY KEY ASC UNIQUE NOT NULL,filename TEXT,
+ path VARCHAR(512) UNIQUE NOT NULL,type TEXT,command INTEGER,wurowid INTEGER);""")
+# /bin/cat with no args copies stdin -> stdout; STDIN0 feeds it, STDOUT0 is uploaded.
+wu={"id":"wu0","commands":["/bin/cat"],
+    "files":{"STDIN0":{"filename":"in.txt"},"STDOUT0":{"filename":"wu0.out","upload":True}}}
+c.execute("INSERT INTO workunits(wuid,status,wu,timecreated) VALUES(?,?,?,?)",("wu0",0,json.dumps(wu),"0"))
+c.commit();c.close()
+PY
+mkdir -p work6 dl6
+printf 'stdin-redirection-payload' > work6/in.txt
+"$ROOT/$SERVER" --db wu6.db --filedir filedir --uploaddir up6 --port 0 >s6.log 2>&1 & S6=$!
+U6=$(url s6.log)
+"$ROOT/$CLIENT" --server "$U6" --single --dldir dl6 --workdir work6 --clientid stdin >c6.log 2>&1; rc=$?
+check "STDIN client exit 0" "$rc" 0
+check "wu recorded (3)" "$(st wu6.db wu0)" 3
+got=$(cat up6/wu0.out 2>/dev/null)
+check "stdin flowed through cat to uploaded stdout" "$got" "stdin-redirection-payload"
+kill $S6 2>/dev/null
+
 echo "## robustness: $PASS passed, $FAIL failed   (artifacts: $T)"
 exit $FAIL
