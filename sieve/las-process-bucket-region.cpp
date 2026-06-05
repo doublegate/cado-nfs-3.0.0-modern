@@ -818,34 +818,41 @@ void process_bucket_region_run::cofactoring_sync (survivors_t & survivors)/*{{{*
         }
     }
 
-    /* Batched GPU ECM drain: one launch over every collected cofactor, then
-     * dispatch the survivors (now carrying a gpu_hint) just like the stock
-     * async path. factor_leftover_norms divides the hint out so facul factors
-     * the smaller remainder. */
+    /* Batched GPU ECM drain: one GPU pass (iterated to a full factorization)
+     * over every collected cofactor, then dispatch the survivors -- now carrying
+     * per-side GPU primes + a (possibly trivial) leftover -- just like the stock
+     * async path. factor_leftover_norms runs facul only on the leftover (skipped
+     * when it is 1) and re-attaches the GPU primes. */
     if (gpu_batch && !gpu_pending.empty()) {
         /* hard-cofactor targeting: skip cofactors below the bit threshold --
          * facul cracks those cheaply, so a GPU launch for them is pure overhead */
         const unsigned int minbits = gpu_ecm_min_cofactor_bits();
         std::vector<cxx_mpz> allcof;
         std::vector<std::pair<size_t, size_t>> pos;   /* (survivor index, side) */
-        for (size_t i = 0; i < gpu_pending.size(); i++)
-            for (size_t side = 0; side < gpu_pending[i].norm.size(); side++) {
-                if (mpz_sizeinbase(gpu_pending[i].norm[side], 2) < minbits)
+        for (size_t i = 0; i < gpu_pending.size(); i++) {
+            cofac_standalone & cur = gpu_pending[i];
+            /* default: no hint -> facul does everything (leftover == norm) */
+            cur.gpu_factors.assign(cur.norm.size(), {});
+            cur.gpu_leftover = cur.norm;
+            for (size_t side = 0; side < cur.norm.size(); side++) {
+                if (mpz_sizeinbase(cur.norm[side], 2) < minbits)
                     continue;
-                allcof.push_back(gpu_pending[i].norm[side]);
+                allcof.push_back(cur.norm[side]);
                 pos.emplace_back(i, side);
             }
+        }
 
         int nc; unsigned long b1, b2;
         gpu_ecm_hook_params(nc, b1, b2);
-        std::vector<cxx_mpz> const found =
-            gpu_ecm::cofac_batch(allcof, nc, b1, b2);
+        std::vector<std::vector<cxx_mpz>> gprimes;
+        std::vector<cxx_mpz> gleft;
+        gpu_ecm::cofac_batch_full(allcof, nc, b1, b2, gprimes, gleft);
 
         for (size_t k = 0; k < pos.size(); k++) {
-            if (mpz_cmp_ui(found[k], 1) <= 0) continue;
             cofac_standalone & cur = gpu_pending[pos[k].first];
-            if (cur.gpu_hint.empty()) cur.gpu_hint.resize(cur.norm.size());
-            mpz_set(cur.gpu_hint[pos[k].second], found[k]);
+            size_t const side = pos[k].second;
+            cur.gpu_factors[side] = std::move(gprimes[k]);
+            mpz_set(cur.gpu_leftover[side].x, gleft[k].x);
         }
 
         for (cofac_standalone & cur : gpu_pending) {

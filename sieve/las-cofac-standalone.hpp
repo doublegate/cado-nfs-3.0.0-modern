@@ -25,11 +25,14 @@ struct cofac_standalone {
     std::vector<cxx_mpz> norm;
     std::vector<factor_list_t> factors;
     std::vector<std::vector<cxx_mpz>> lps;
-    /* Optional GPU ECM factor hint, one entry per side (empty when the batched
-     * GPU drain is off). A value > 1 is a factor of norm[side] found by the
-     * per-bucket-region GPU ECM pre-pass; factor_leftover_norms divides it out
-     * so facul factors the smaller remainder. See las-cofactor.cpp. */
-    std::vector<cxx_mpz> gpu_hint;
+    /* Optional GPU ECM factorization hint from the per-bucket-region batched
+     * drain (empty when off). Per side: gpu_factors[side] are prime factors the
+     * GPU extracted from norm[side], and gpu_leftover[side] is the remaining
+     * part for facul (1 when the GPU fully factored it -> facul is skipped),
+     * with product(gpu_factors[side]) * gpu_leftover[side] == norm[side]. See
+     * las-cofactor.cpp / gpu_cofac.cpp. */
+    std::vector<std::vector<cxx_mpz>> gpu_factors;
+    std::vector<cxx_mpz> gpu_leftover;
     int64_t a;
     uint64_t b;
 

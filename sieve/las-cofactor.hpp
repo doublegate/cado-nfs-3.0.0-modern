@@ -79,7 +79,8 @@ facul_status factor_leftover_norms(
         std::vector<std::vector<cxx_mpz>> &,
         std::vector<unsigned long> const &,
         facul_strategies const &,
-        std::vector<cxx_mpz> const & gpu_hint = {});
+        std::vector<std::vector<cxx_mpz>> const & gpu_factors = {},
+        std::vector<cxx_mpz> const & gpu_leftover = {});
 
 /* handy shortcut. Can't have it defined at the facul.hpp level because
  * facul does not know about las stuff. */

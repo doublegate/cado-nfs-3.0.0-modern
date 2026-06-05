@@ -307,13 +307,15 @@ namespace {
         std::atomic<unsigned long> calls{0};   /* factor_leftover_norms calls hooked */
         std::atomic<unsigned long> split{0};   /* cofactors GPU returned a factor for */
         std::atomic<unsigned long> salvaged{0};/* FACUL_MAYBE upgraded to SMOOTH */
+        std::atomic<unsigned long> full{0};    /* GPU-eligible sides fully factored (leftover==1) */
+        std::atomic<unsigned long> partial{0}; /* GPU-eligible sides left composite for facul */
         ~gpu_hook_stats() {
             unsigned long const c = calls.load();
             if (c)
                 fprintf(stderr,
-                    "# GPU ECM cofac hook: %lu calls, %lu cofactors split by GPU,"
-                    " %lu MAYBE salvaged\n",
-                    c, split.load(), salvaged.load());
+                    "# GPU ECM cofac hook: %lu calls, %lu primes from GPU,"
+                    " %lu MAYBE salvaged, %lu sides full / %lu partial\n",
+                    c, split.load(), salvaged.load(), full.load(), partial.load());
         }
     };
     gpu_hook_stats gpu_stats;
@@ -384,40 +386,43 @@ facul_status factor_leftover_norms(
         std::vector<std::vector<cxx_mpz>> & factors,
         std::vector<unsigned long> const & Bs,
         facul_strategies const & strat,
-        std::vector<cxx_mpz> const & gpu_hint)
+        std::vector<std::vector<cxx_mpz>> const & gpu_factors,
+        std::vector<cxx_mpz> const & gpu_leftover)
 {
     ASSERT_ALWAYS(Bs.size() == strat.B.size());
     ASSERT_ALWAYS(std::ranges::equal(Bs, strat.B));
 
-    /* Batched GPU drain (CADO_GPU_ECM=batch): if the per-bucket-region GPU ECM
-     * pre-pass left a prime factor hint for a side, divide it out so facul
-     * factors the smaller remainder; we re-attach the prime afterwards. Only a
-     * prime <= 2^lpb is used (leaving anything else in keeps facul's verdict
-     * correct). This is the work-saving path; it yields a valid superset. */
-    std::vector<cxx_mpz> work;                 /* remainders fed to facul */
-    std::vector<cxx_mpz> reattach(n.size());   /* prime to prepend per side, or 0 */
-    bool any_hint = false;
-    for (auto & r : reattach) mpz_set_ui(r, 0);
-    if (!gpu_hint.empty()) {
-        work = n;                              /* copy; mutate the hinted sides */
-        for (size_t s = 0; s < n.size() && s < gpu_hint.size(); s++) {
-            cxx_mpz const & f = gpu_hint[s];
-            if (mpz_cmp_ui(f, 1) <= 0) continue;          /* no hint */
-            if (!mpz_divisible_p(n[s], f)) continue;      /* stale/paranoia */
-            if (mpz_sizeinbase(f, 2) <= strat.lpb[s]
-                && mpz_probab_prime_p(f, 25))
-            {
-                mpz_divexact(work[s], n[s], f);
-                mpz_set(reattach[s], f);
-                any_hint = true;
-                gpu_stats.split.fetch_add(1, std::memory_order_relaxed);
+    /* Batched GPU drain (CADO_GPU_ECM=batch): the per-bucket-region GPU ECM
+     * pre-pass (gpu_cofac.cpp) fully factors each cofactor as far as ECM can,
+     * giving per side a list of prime factors (gpu_factors[side]) and the
+     * remaining part for facul (gpu_leftover[side], == 1 when fully factored).
+     * facul therefore runs only on the (smaller, often trivial) leftover -- and
+     * when the leftover is 1 it is skipped entirely. We re-attach the GPU primes
+     * afterwards, so product(primes)==norm holds. A GPU-found prime that exceeds
+     * the large-prime bound makes the side NOT_SMOOTH without any facul work --
+     * the big saving on the non-smooth majority. Valid superset, never wrong
+     * (the GPU primes are verified prime and dividing in gpu_cofac.cpp). */
+    bool const any_hint = !gpu_leftover.empty();
+    if (any_hint) gpu_stats.calls.fetch_add(1, std::memory_order_relaxed);
+
+    /* call the facul library on the leftovers (== n when no hint) */
+    auto fac = facul_all(any_hint ? gpu_leftover : n, strat);
+
+    /* when the GPU fully factored a side (leftover == 1) the side is smooth by
+     * construction -- the prime factors are all in gpu_factors[side]. facul on a
+     * trivial input of 1 does not return a clean SMOOTH, so override its verdict
+     * here; this is what lets a complete GPU factorization skip facul entirely. */
+    if (any_hint)
+        for (size_t s = 0; s < fac.size() && s < gpu_leftover.size(); s++) {
+            bool const gpu_touched = s < gpu_factors.size() && !gpu_factors[s].empty();
+            if (mpz_cmp_ui(gpu_leftover[s], 1) == 0) {
+                fac[s].status = FACUL_SMOOTH;
+                fac[s].primes.clear();
+                if (gpu_touched) gpu_stats.full.fetch_add(1, std::memory_order_relaxed);
+            } else if (gpu_touched) {
+                gpu_stats.partial.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        if (any_hint) gpu_stats.calls.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    /* call the facul library (on the reduced remainders when hinted) */
-    auto fac = facul_all(any_hint ? work : n, strat);
 
     /* per-call GPU hook (shadow/salvage) only when NOT using a batch hint */
     if (!any_hint && (g_gpu_mode == gpu_ecm_mode::shadow
@@ -429,6 +434,13 @@ facul_status factor_leftover_norms(
         if (f.status == FACUL_NOT_SMOOTH)
             return FACUL_NOT_SMOOTH;
     }
+    /* a GPU-extracted prime above the large-prime bound -> not smooth */
+    if (any_hint)
+        for (size_t side = 0; side < gpu_factors.size(); side++)
+            for (auto const & p : gpu_factors[side])
+                if (mpz_sizeinbase(p, 2) > strat.lpb[side])
+                    return FACUL_NOT_SMOOTH;
+
     for(size_t side = 0 ; side < fac.size() ; side++) {
         auto & f = fac[side];
         if (f.status == FACUL_MAYBE) {
@@ -444,10 +456,13 @@ facul_status factor_leftover_norms(
              */
             return FACUL_MAYBE;
         }
-        /* re-attach the GPU-divided prime so the side's factorization (and the
-         * product==norm invariant below) is complete */
-        if (mpz_cmp_ui(reattach[side], 0) > 0)
-            f.primes.push_back(reattach[side]);
+        /* re-attach the GPU-extracted primes so the side's factorization (and
+         * the product==norm invariant below) is complete */
+        if (any_hint && side < gpu_factors.size())
+            for (auto const & p : gpu_factors[side]) {
+                f.primes.push_back(p);
+                gpu_stats.split.fetch_add(1, std::memory_order_relaxed);
+            }
 #ifndef NDEBUG
         cxx_mpz z = 1;
         for(auto const & p : f.primes)

@@ -162,7 +162,8 @@ int cofac_standalone::factor_leftover_norms(nfs_work_cofac & wc) {/*{{{*/
             lps,
             Bs,
             *wc.strategies,
-            gpu_hint);
+            gpu_factors,
+            gpu_leftover);
 }/*}}}*/
 
 std::ostream& operator<<(std::ostream& os, cofac_standalone const & cur)
