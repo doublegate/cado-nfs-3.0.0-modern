@@ -1,4 +1,17 @@
 
+<!-- fork banner -->
+> **This is `doublegate/cado-nfs-3.0.0-modern`** — a downstream modernization +
+> performance fork of upstream [CADO-NFS](https://gitlab.inria.fr/cado-nfs/cado-nfs)
+> **3.0.0** (LGPL-2.1). Internal version: **`3.0.0-modern`**. The upstream NFS
+> algorithms and parameters are unchanged; this fork rebases onto current
+> toolchains (CMake 4.x, GCC 16, Python 3.14) and adds measured build/compiler,
+> SIMD, GPU-cofactorization, and Rust-orchestration work. See
+> [`CHANGELOG.md`](CHANGELOG.md) for the full patch list, and
+> [`docs/gpu-cofactorization.md`](docs/gpu-cofactorization.md) /
+> [`docs/rust-orchestration.md`](docs/rust-orchestration.md) for the deep-dives.
+> The earlier 2.3.0-based release (`2.3.1-modern`) is preserved under the
+> `v2.3.1-modern` tag. Everything below is upstream's own README.
+
 The main page of the Cado-NFS source code is
 [https://gitlab.inria.fr/cado-nfs/cado-nfs](https://gitlab.inria.fr/cado-nfs/cado-nfs).
 If you're accessing the cado-nfs source from a different link, it may be
