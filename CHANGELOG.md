@@ -88,13 +88,25 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   `mul()`'s host-buffer pinning (`cudaHostRegister`) is smaller than the comm's
   full-vector copies and CUDA enforces the registered region — `g_pin` now skips
   under `DEVCOMM` (copies go pageable; the default path keeps pinning).
-- **Honest scope of the comm-on-device work so far:** it ports the comm *compute*
-  to the device (validated), **not yet the transfers** — both the allreduce hook
-  and the 2D driver upload + write back for correctness (`current = false`). The
-  transfer-eliminating residency (device-authoritative buffers, skipping the
-  comm's upload/writeback and mul()'s H2D/D2H) needs complete host-write-
-  invalidation / host-read-sync coverage across prep/secure/twist/krylov — the
-  remaining layer, scoped in `docs/gpu-linalg.md`.
+- **Full vector residency — the steady krylov loop runs entirely on device
+  buffers (H2D/D2H eliminated).** With `CADO_GPU_VECRESIDENT` + `CADO_GPU_DEVCOMM`
+  the BWC vectors stay device-resident across `mul → comm → mul`: `mul()` skips its
+  H2D (device src current) and D2H (dst left on device, host stale); the 2D comm
+  skips its host upload of `w` and marks its output `v` device-resident instead of
+  writing it back; `matmul_top_mul` no longer invalidates the comm's device result
+  in residency mode. Scoped to the krylov inner loop (`cado_gpu_residency_active`,
+  set/cleared in `krylov.cpp`) so prep/secure/twist stay host-authoritative; the
+  one per-iteration host read (`x_dotprod`) and the loop boundary materialise the
+  vector via `cado_gpu_sync_to_host`, and twist/untwist already invalidate the
+  device copy so each block re-seeds. **Validated:** `product == N` 45/45 across
+  default, `DEVCOMM`, and `VECRESIDENT+DEVCOMM` × `-t 2/4/8`; `compute-sanitizer`
+  memcheck on krylov in residency mode reports 0 errors; transfer counters
+  (`CADO_GPU_STATS`) confirm the steady loop skips **D2H 100% / H2D ~99%**. This
+  eliminates the per-iteration PCIe transfers (the measured ~60% of SpMV time at
+  c70/c80, growing with N), realising the ~2.6× SpMV-hot-loop win where linalg
+  dominates (large N / DLP). Remaining headroom: multi-GPU/MPI, `x_dotprod` on the
+  GPU (the lone surviving per-iteration D2H), and mksol. Default and DEVCOMM-only
+  paths are unchanged and bit-exact.
 
 ### UI/UX (Track 3.1) — run-status reporting
 

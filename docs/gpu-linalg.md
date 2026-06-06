@@ -266,24 +266,34 @@ surgical edit:
     is a transfer-speed optimisation that residency makes moot, so `g_pin` now
     skips when `DEVCOMM` is active (copies go pageable — correct; the default path
     keeps pinning and its measured speedup).
-- **Still NO-TRUST: this ports the comm *compute* to the device, not yet the
-  *transfers*.** The driver uploads `w` from host, computes on device, and writes
-  `v` back (`current = false`) — a correctness checkpoint of the device transpose
-  in the real pipeline. The transfer-eliminating residency (`current = true` +
-  `host_dirty`, skipping the comm's upload/writeback **and** mul()'s H2D/D2H) is
-  the remaining layer, and it is gated on **complete host-write invalidation /
-  host-read `from_device` coverage across prep, secure, twist *and* krylov** —
-  marking comm'd buffers device-authoritative corrupted prep/secure earlier
-  (those stages overwrite host buffers without an invalidation). That audit, plus
-  flipping the comm + mul to device-authoritative, is the next step.
+- **Full vector residency — done: the steady loop now skips H2D/D2H.** With
+  `CADO_GPU_VECRESIDENT` + `CADO_GPU_DEVCOMM`, the krylov inner loop keeps the
+  vectors device-resident across `mul → comm → mul`: `mul()` skips its H2D (device
+  src current) and D2H (dst left on device, `host_dirty`); the 2D comm skips its
+  host upload of `w` and, instead of writing `v` back, marks it device-resident
+  (`cado_gpu_dev_mark_resident`). The catch that had to be fixed: `matmul_top_mul`
+  invalidates the comm's output after the comm (correct for the host-writing
+  no-trust path) — in residency that would discard the device result and force a
+  re-upload, so it is now skipped when residency is active.
+  - **Scoped to the krylov inner loop** via `cado_gpu_residency_active`
+    (set/cleared by `krylov.cpp` around the loop), so prep/secure/twist — which
+    overwrite host buffers without invalidation — stay host-authoritative and are
+    untouched. The one per-iteration host read (`x_dotprod`) and the loop boundary
+    call `cado_gpu_sync_to_host` to materialise the vector; `twist`/`untwist`
+    already invalidate the device copy, so the next block re-seeds correctly.
+  - **Validated:** `product == N` 45/45 across default, `DEVCOMM`, and
+    `VECRESIDENT+DEVCOMM` × `-t 2/4/8`; `compute-sanitizer` memcheck on krylov in
+    residency mode reports 0 errors. Transfer counters (`CADO_GPU_STATS`) confirm
+    the steady loop skips **D2H 100%** and **H2D ~99%** (only the per-block re-seed
+    after the twist remains) — i.e. the per-iteration PCIe transfers (the measured
+    ~60% of SpMV time at c70/c80, growing with N) are eliminated, realising the
+    ~2.6× SpMV-hot-loop win where linalg dominates (large N / DLP).
 
-So the device-comm *mechanism* for the hot path is done and correctness-gated; the
-steady-state inner loop running entirely on device buffers (H2D/D2H gone) is the
-remaining residency layer (the invalidation/sync audit), each step gated by a full
-verified factorization in default *and* resident modes.
-
-Until then, the backend captures the bounded win (pinning, default path) and is
-bit-exact.
+So the GPU SpMV **and** its comm now run entirely on device buffers across the
+steady iteration; the remaining headroom is multi-GPU / multi-node (MPI),
+`x_dotprod` on the GPU (the lone surviving per-iteration D2H), and the same
+treatment for mksol. The default and DEVCOMM-only paths are unchanged and
+bit-exact (the default path keeps host-vector pinning and its measured speedup).
 
 ## Kernel tuning — done (coalesced warp-per-row)
 
