@@ -40,26 +40,44 @@ thousands of iterations), so only the kernel is timed. On an RTX 3090 vs a
 nvcc -arch=sm_86 -O3 -Xcompiler -pthread bench/gpu-spmv-bench.cu -o gpu-spmv-bench && ./gpu-spmv-bench
 ```
 
-## Honest caveats (read before believing the table)
+## Measured against CADO's real `bucket` backend (the honest comparison)
 
-- **The CPU baseline is the *naive* `matmul-basic` loop, not CADO's production
-  `bucket` backend.** `bucket` is cache-blocked and bucket-sorted and is
-  materially faster than `basic`, so the speedup vs CADO's *actual* CPU linear
-  algebra is **lower** than the table above. The honest next step is to benchmark
-  the GPU kernel against `bench_matcache --impl bucket` on a real BWC matrix —
-  until then, treat these numbers as "GPU vs the reference loop", an upper bound
-  on the production win.
-- **Synthetic matrix.** Random CSR has worse locality than a real
-  filtered/balanced BWC matrix (whose columns are reordered for cache reuse), but
-  also lacks the structure a tuned CPU backend exploits — the real comparison can
-  move either way and must be measured.
-- **Bandwidth-bound, kernel un-tuned.** SpMV is memory-bound; the one-thread-per-
-  row kernel hits ~10% of the 3090's ~936 GB/s peak because the `src[col]` gather
-  is uncoalesced. ELL/sliced formats, sorting columns for reuse, and caching `src`
-  in shared memory are known wins not yet applied — so the GPU number has
-  headroom too.
+The table above compares the GPU to the **naive `matmul-basic` loop**, which
+overstates the win. Measured directly with `bench_matcache` on a **real
+1M×1M GF(2) matrix (30M nonzeros)** from `random_matrix`, **single CPU thread**:
+
+| backend | ns/coeff | Gnz/s | vs naive |
+|---|---:|---:|---:|
+| `basic` (naive loop) | ~2.8 | 0.35 | 1.0× |
+| `sliced` | ~1.5 | 0.67 | 1.9× |
+| **`bucket` (production default)** | ~1.58 | **0.63** | **1.8×** |
+
+So CADO's production `bucket` is **~1.8× the naive loop**, and the GPU b64 kernel
+(7.9 Gnz/s) is **~12× a single `bucket` thread**. But the full 20-core CPU runs
+`bucket` across all cores, and SpMV is **memory-bandwidth-bound** — the
+i9-10850K's ~45 GB/s won't scale 20×, realistically reaching a few Gnz/s. **So
+the honest single-machine win of this GPU kernel over the full production CPU is
+modest — roughly 1.5–3×, not 6–15× — because both are bandwidth-bound** (the 3090
+has ~20× the raw bandwidth, but the un-tuned kernel realizes only ~10% of it, and
+`bucket` is cache-blocked to *need* less bandwidth). A rigorous full-CPU `bucket`
+number needs a balanced multi-file split (`bench_matcache` threads over one
+submatrix file per thread) — that exact measurement is the immediate next step.
+
+**Where the GPU genuinely wins is at *scale*:** aggregate bandwidth across many
+GPUs/nodes, and matrices too large for one machine's RAM — the multi-GPU/MPI path
+below — not a single-desktop 10× on the matmul kernel.
+
+## Other caveats
+
+- **Synthetic matrix** for the GPU table: random CSR has worse locality than a
+  real filtered/balanced BWC matrix (columns reordered for cache reuse). The real
+  comparison can move either way; the `bucket` numbers above *are* on a real
+  matrix.
+- **Kernel un-tuned.** One-thread-per-row hits ~10% of the 3090's ~936 GB/s peak
+  (uncoalesced `src[col]` gather). ELL/sliced formats, column sorting for reuse,
+  and shared-memory `src` caching are known wins not yet applied — GPU headroom.
 - **Memory.** The matrix must fit in GPU memory (24 GB on a 3090 → roughly up to
-  ~c150-scale); larger matrices need the multi-GPU/multi-node path below.
+  ~c150-scale); larger needs the multi-GPU/multi-node path below.
 
 ## Integration path (next increments)
 
@@ -80,6 +98,11 @@ nvcc -arch=sm_86 -O3 -Xcompiler -pthread bench/gpu-spmv-bench.cu -o gpu-spmv-ben
 ## Status
 
 - **Done & validated:** the GF(2) SpMV GPU kernel (b64/b128/b256), bit-exact vs
-  the CPU reference, with a benchmark (`bench/gpu-spmv-bench.cu`).
-- **Next:** benchmark vs the real `bucket` backend on a true BWC matrix; then the
-  `matmul_bNN_gpu` backend + the multi-GPU/MPI wiring.
+  the CPU reference (`bench/gpu-spmv-bench.cu`); and the honest comparison vs
+  CADO's real `basic`/`sliced`/`bucket` backends on a real matrix
+  (`bench_matcache`), which puts the single-machine win at a sober ~1.5–3× (not
+  6–15×) — both bandwidth-bound.
+- **Next:** a full-CPU threaded `bucket` measurement (balanced split); then the
+  `matmul_bNN_gpu` backend (resident matrix, ELL/coalesced kernel) + the
+  multi-GPU/MPI wiring, where the GPU's real advantage (aggregate bandwidth at
+  scale, out-of-core matrices) lives.

@@ -24,13 +24,16 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   (`dst[i] = XOR_{j in row i} src[j]`, bitsliced K-limb blocks b64/b128/b256);
   validated bit-exact vs the CPU loop (0 wrong words). With the matrix resident
   on the device (as BWC reuses it), on an RTX 3090 vs a 20-thread i9-10850K it
-  reaches **6–15× the *naive* CPU SpMV** (7.9 Gnz/s b64, 5.1 b128).
-  **Honest caveat:** the CPU baseline is `matmul-basic`, *not* CADO's tuned
-  `bucket` backend (which is faster), and the kernel is un-tuned (uncoalesced
-  `src` gather, ~10% of peak bandwidth) — so this is an upper bound on the
-  production win; benchmarking vs `bucket` on a real matrix and building the
-  `matmul_bNN_gpu` backend (resident matrix, multi-GPU via the existing MPI
-  balancing) are the next increments. Full design + caveats:
+  reaches 6–15× the *naive* CPU SpMV (7.9 Gnz/s b64, 5.1 b128).
+- **Honest comparison vs the real `bucket` backend** (measured with
+  `bench_matcache` on a real 1M×1M, 30M-nnz matrix from `random_matrix`):
+  CADO's production `bucket`/`sliced` run ~0.63–0.67 Gnz/s single-thread (**~1.8×
+  the naive loop**), so the headline "6–15× vs naive" overstates the production
+  win. With the full bandwidth-bound CPU, the GPU kernel's **single-machine win is
+  a sober ~1.5–3×, not 6–15×** — both are memory-bandwidth-bound. The GPU's real
+  advantage is at *scale* (aggregate multi-GPU/multi-node bandwidth, out-of-core
+  matrices). Next: a `matmul_bNN_gpu` backend (resident matrix, coalesced kernel)
+  + multi-GPU via the existing MPI balancing. Full design + honest numbers:
   `docs/gpu-linalg.md`.
 
 ### UI/UX (Track 3.1) — run-status reporting
