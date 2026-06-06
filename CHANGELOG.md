@@ -197,6 +197,21 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   AVX-512 hardware. Remaining (perf-gated): port `mul2`–`mul9` to VPCLMULQDQ +
   threshold retune (see `gf2x/already_tuned/x86_64_vpclmul/INTEGRATION.md`).
 
+### CPU/SIMD (Track 1.4) — AVX-512 IFMA GF(p) modmul kernel (foundation)
+
+- **Bit-exact AVX-512-IFMA batched Montgomery modular multiplication**
+  (`bench/ifma-modmul.c`): the foundation kernel for an mpfq GF(p) IFMA backend
+  (DLP linear algebra). It does **8 independent modmuls per instruction stream**
+  (one per 512-bit lane) in radix 2^52 — the natural IFMA radix, so partial
+  products land exactly in the lo/hi halves `_mm512_madd52lo/hi_epu64` produce —
+  via a lane-parallel CIOS Montgomery. Validated **bit-exact vs GMP under Intel
+  SDE** (`bench/ifma-validate.sh`, `-future`): **0/32000 wrong, 260-bit, 8-way.**
+  Same method as the gf2x VPCLMULQDQ work (Comet Lake has no IFMA; SDE emulates
+  it). CI-gated in `.github/workflows/avx512-validate.yml` (objdump `vpmadd52`
+  fallback if SDE is unavailable). Full mpfq integration (wiring it into the
+  generated GF(p) arithmetic + the BWC GF(p) SpMV, and a perf number on real
+  IFMA silicon) is follow-up; this proves the arithmetic primitive.
+
 ### CPU (Track 1.2) — PGO retry (honest negative)
 
 - **Siever-trained PGO retry — rejected again.** v3.0.0 rejected whole-program PGO

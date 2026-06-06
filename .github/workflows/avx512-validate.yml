@@ -14,11 +14,13 @@ on:
     paths:
       - 'gf2x/**'
       - 'bench/vpclmul-*'
+      - 'bench/ifma-*'
       - '.github/workflows/avx512-validate.yml'
   pull_request:
     paths:
       - 'gf2x/**'
       - 'bench/vpclmul-*'
+      - 'bench/ifma-*'
   workflow_dispatch:
 
 permissions:
@@ -56,6 +58,11 @@ jobs:
 
       - name: Validate the VPCLMULQDQ mul_1_n kernel (bit-exact vs scalar)
         run: bash bench/vpclmul-validate.sh
+
+      - name: Validate the IFMA Montgomery modmul kernel (bit-exact vs GMP)
+        run: |
+          sudo apt-get update && sudo apt-get install -y libgmp-dev
+          bash bench/ifma-validate.sh
 
       - name: Regenerate gf2x configure and check VPCLMUL auto-detection
         run: |
