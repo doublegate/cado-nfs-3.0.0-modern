@@ -168,7 +168,7 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   `verification()` (which already computed achievement + ETA). Off by default; no
   behaviour change unless a flag is given. Validated on a 59-digit factorization.
 
-### GPU (Track 2.1) — pre-NFS factoring front-end (foundation)
+### GPU (Track 2.1) — pre-NFS factoring front-end (validated)
 
 - **Multi-precision (K-limb) GPU ECM.** The existing GPU ECM
   (`sieve/ecm/gpu_ecm.cu`) only handles moduli < 2^126 — useless for stripping a
@@ -225,6 +225,14 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   moduli as register/local-memory pressure lowers GPU occupancy — honest caveat).
   Recorded in `BENCHMARKS.md`. (Caught and fixed a dead-code-elimination trap: the
   CPU side needs an observable sink or the optimizer removes the whole ECM.)
+- **Canonical deep-dive doc** (`docs/gpu-prefactor.md`): the why (separate stage,
+  no Amdahl ceiling — contrast with `docs/gpu-cofactorization.md`), the
+  multi-precision Montgomery ECM, the correctness gates, build/run, the integrated
+  `--gpu-prefactor` path, and the measured throughput table. Benchmark re-confirmed
+  on the RTX 3090 (48.6× / 25.9× / 12.2× at 128/256/512-bit, within noise of the
+  recorded figures) and an end-to-end `staged` run on a 90-digit N verified
+  `product == N` (every stripped factor divides N; cofactor × stripped-product == N;
+  self-check PASS throughout).
 
 ## [3.0.0-modern] — 2026-06-05
 
