@@ -147,11 +147,17 @@ single increment. The honest sequence:
 1. **A device-resident `mmt_vec` shadow** + `matmul_interface` sync hooks
    (`to_device`/`from_device`), backend keeps the authoritative device copy.
 2. **GPU `x_dotprod`** (sparse `x` · device vector) so the per-iteration dot
-   product no longer pulls the vector to the host.
+   product no longer pulls the vector to the host. **Kernel built + validated
+   bit-exact** (`bench/gpu-xdotprod-bench.cu`, ALL PASS) — ready to wire in.
 3. **GPU intra-node reduction/broadcast** for the single-node multi-thread comm
    (the common single-machine case), keeping vectors on-device across the inner
    loop; sync to host only per-interval (twist/save) and for real MPI.
 4. **Multi-node**: GPU-direct (CUDA-aware) MPI, or host-staged exchange.
+
+Approach: each device-side primitive is built and validated **standalone first**
+(no risk to real runs), then wired into the resident loop, with a full verified
+factorization (`product == N`) as the gate at integration. Primitives ready: the
+coalesced SpMV kernel and `x_dotprod`.
 
 Each step is correctness-gated by a full verified factorization. Until then, the
 backend captures the bounded win (pinning) and is bit-exact.
