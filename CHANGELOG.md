@@ -59,6 +59,14 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   (`# selfcheck: PASS`). This lifts the reach from ~12-digit to **15-digit
   factors** (e.g. stripped a 15-digit factor from a 102-digit N; a 14-digit from
   a 95-digit N) at the same `B1`. CLI: `gpu-prefactor <N> [B1] [curves] [B2]`.
+- **Multi-GPU** batching: the curve batch is split across all visible devices and
+  launched asynchronously (concurrent), degenerating to a single launch on a
+  one-GPU box. Plus a **CMake target** (`misc/CMakeLists.txt`, built when
+  `-DENABLE_GPU=ON`): `make gpu-prefactor`, installed to `<libdir>/misc`. The
+  target forces device `-O3` (CADO sets no `CMAKE_BUILD_TYPE`, so default CUDA
+  flags are unoptimized — a ~30× trap) and defaults to `sm_86`
+  (`-DCADO_GPU_ARCH=` to override). The CMake build matches the standalone nvcc
+  throughput (~550 curves/s, stage1+2, 512-bit on an RTX 3090).
 
 ## [3.0.0-modern] — 2026-06-05
 

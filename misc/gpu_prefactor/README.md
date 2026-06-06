@@ -30,10 +30,24 @@ Montgomery setup (`n^{-1} mod 2^64`, `R mod n`, `R^2 mod n`) and `gcd(Z, n)`.
 
 ## Build & use
 
+Via the project (built only with `-DENABLE_GPU=ON`):
+
+```bash
+# in local.sh: CMAKE_EXTRA_ARGS="... -DENABLE_GPU=ON"   (optionally -DCADO_GPU_ARCH=86)
+make cmake && (cd build/$(hostname) && make gpu-prefactor)
+build/$(hostname)/misc/gpu-prefactor <N> [B1=50000] [curves=4096] [B2=100*B1]
+```
+
+Or standalone:
+
 ```bash
 nvcc -arch=sm_86 -O3 misc/gpu_prefactor/gpu-prefactor.cu -lgmp -o gpu-prefactor
-./gpu-prefactor <N> [B1=50000] [curves=4096]
+./gpu-prefactor <N> [B1=50000] [curves=4096] [B2=100*B1]
 ```
+
+Stage-2 (BSGS) + Suyama-σ curves are on by default; each run self-checks a
+32-lane subset GPU-vs-CPU (`# selfcheck: PASS`). The curve batch is split across
+all visible GPUs (multi-GPU; one launch on a single-GPU box).
 
 Example (a 12-digit factor inside a 103-digit `N`):
 
@@ -50,13 +64,13 @@ larger `B1` / more curves), `2` on a usage/size error.
 
 ## Status & next increments
 
-- **Done & validated:** the multi-precision GPU ECM math (bit-exact) and a working
-  standalone stage-1 pre-factor CLI.
-- **Next (Track 2.1):** stage-2 BSGS + Suyama-σ curves (port the 64/128-bit
-  versions in `sieve/ecm/gpu_ecm.cu` to K-limb for a much higher hit rate);
-  multi-GPU batching (`cudaSetDevice` round-robin); a `cado-nfs.py --gpu-prefactor`
-  pre-stage and CMake target (`-DENABLE_GPU=ON`); and a benchmark vs CPU GMP-ECM.
+- **Done & validated:** the multi-precision GPU ECM math (bit-exact); stage-1 +
+  stage-2 BSGS + Suyama-σ curves (per-run GPU-vs-CPU self-check); multi-GPU
+  batching; and the CMake target (`-DENABLE_GPU=ON`, device `-O3`, `sm_86`).
+- **Next (Track 2.1):** a `cado-nfs.py --gpu-prefactor` pre-stage (run this,
+  substitute the reduced cofactor, recombine the stripped factors at the end);
+  and a benchmark vs CPU GMP-ECM across factor sizes.
 
-Stage-1 only finds factors whose curve order is `B1`-smooth, so the current tool
-favours smaller factors / larger curve counts; stage-2 and Suyama curves are the
-standard refinements that make medium (20-30 digit) factors practical.
+Reach today: ~15-digit factors at `B1=50000`; raising `B1`/`B2`/`curves` extends
+it (the usual ECM trade-off). Larger factors want the standard staged-`B1`
+schedule, a follow-up.

@@ -28,4 +28,24 @@ endif()
 add_executable(cl_structure_from_group_order cl_structure_from_group_order.cpp)
 target_link_libraries(cl_structure_from_group_order utils)
 
+# GPU ECM pre-NFS factoring front-end (v3.1.0-modern, Track 2.1). Strips small/
+# medium factors from N on the GPU before NFS. Built only when the CUDA GPU
+# backend is enabled (-DENABLE_GPU=ON, which sets HAVE_GPU_ECM and enables the
+# CUDA language in config/cuda.cmake). See misc/gpu_prefactor/README.md.
+if(HAVE_GPU_ECM)
+    add_executable(gpu-prefactor gpu_prefactor/gpu-prefactor.cu)
+    # Default to the reference RTX 3090 (sm_86); override -DCADO_GPU_ARCH=<cc>.
+    # (CMake 4.x can auto-pick a stale CMAKE_CUDA_ARCHITECTURES like 75.)
+    if(NOT DEFINED CADO_GPU_ARCH)
+        set(CADO_GPU_ARCH 86)
+    endif()
+    set_target_properties(gpu-prefactor PROPERTIES CUDA_ARCHITECTURES "${CADO_GPU_ARCH}")
+    # CADO sets no CMAKE_BUILD_TYPE (it uses local.sh flags), so the default CUDA
+    # flags carry no optimization; force device -O3 or the kernels run ~30x slow.
+    target_compile_options(gpu-prefactor PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3>)
+    target_include_directories(gpu-prefactor PRIVATE ${GMP_INCDIR})
+    target_link_libraries(gpu-prefactor CUDA::cudart ${gmp_libname})
+    install(TARGETS gpu-prefactor RUNTIME DESTINATION ${LIBSUFFIX}/misc)
+endif()
+
 include(CMakeLists-nodist.txt OPTIONAL)

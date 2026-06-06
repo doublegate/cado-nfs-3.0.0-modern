@@ -99,37 +99,59 @@ static bool ecm_pass(const mpz_t N, int ncurves,
     }
     mpz_clears(mx,mz,ma,luck,NULL);
 
-    /* device arrays */
+    /* host per-lane N/np/R1/R2 (identical across lanes) */
     std::vector<u64> Nv(ncurves*K),R1v(ncurves*K),R2v(ncurves*K),NPv(ncurves);
     for(int i=0;i<ncurves;i++){ mp_copy<K>(&Nv[i*K],Nl); mp_copy<K>(&R1v[i*K],R1);
         mp_copy<K>(&R2v[i*K],R2); NPv[i]=np; }
-    u64 *dN,*dNP,*dR1,*dR2,*dX0,*dZ0,*dA24,*ds,*dpr,*dZ1,*dG2;
-    bool ok = cudaMalloc(&dN,(size_t)ncurves*K*8)==cudaSuccess;
-    cudaMalloc(&dNP,ncurves*8); cudaMalloc(&dR1,(size_t)ncurves*K*8);
-    cudaMalloc(&dR2,(size_t)ncurves*K*8); cudaMalloc(&dX0,(size_t)ncurves*K*8);
-    cudaMalloc(&dZ0,(size_t)ncurves*K*8); cudaMalloc(&dA24,(size_t)ncurves*K*8);
-    cudaMalloc(&dZ1,(size_t)ncurves*K*8); cudaMalloc(&dG2,(size_t)ncurves*K*8);
-    cudaMalloc(&ds,ns>0?ns*8:8); cudaMalloc(&dpr,npr>0?npr*8:8);
-    cudaMemcpy(dN,Nv.data(),(size_t)ncurves*K*8,cudaMemcpyHostToDevice);
-    cudaMemcpy(dNP,NPv.data(),ncurves*8,cudaMemcpyHostToDevice);
-    cudaMemcpy(dR1,R1v.data(),(size_t)ncurves*K*8,cudaMemcpyHostToDevice);
-    cudaMemcpy(dR2,R2v.data(),(size_t)ncurves*K*8,cudaMemcpyHostToDevice);
-    cudaMemcpy(dX0,X0.data(),(size_t)ncurves*K*8,cudaMemcpyHostToDevice);
-    cudaMemcpy(dZ0,Z0.data(),(size_t)ncurves*K*8,cudaMemcpyHostToDevice);
-    cudaMemcpy(dA24,A24.data(),(size_t)ncurves*K*8,cudaMemcpyHostToDevice);
-    if(ns>0) cudaMemcpy(ds,spow.data(),ns*8,cudaMemcpyHostToDevice);
-    if(npr>0) cudaMemcpy(dpr,pr.data(),npr*8,cudaMemcpyHostToDevice);
-    int tpb=64, blk=(ncurves+tpb-1)/tpb;
-    auto t0=std::chrono::steady_clock::now();
-    ecm_kernel2<K><<<blk,tpb>>>(dN,dNP,dR1,dR2,dX0,dZ0,dA24,ds,ns,dpr,npr,dZ1,dG2,ncurves);
-    cudaDeviceSynchronize();
-    auto t1=std::chrono::steady_clock::now();
-    if(cudaGetLastError()!=cudaSuccess) ok=false;
     std::vector<u64> Z1(ncurves*K),G2(ncurves*K);
-    cudaMemcpy(Z1.data(),dZ1,(size_t)ncurves*K*8,cudaMemcpyDeviceToHost);
-    cudaMemcpy(G2.data(),dG2,(size_t)ncurves*K*8,cudaMemcpyDeviceToHost);
+
+    /* multi-GPU: split the curve batch across all visible devices, launch each
+     * asynchronously, then synchronize — so multiple GPUs run concurrently.
+     * Degenerates to a single launch on a one-GPU box. */
+    int ndev=1; if(cudaGetDeviceCount(&ndev)!=cudaSuccess||ndev<1) ndev=1;
+    int per=(ncurves+ndev-1)/ndev;
+    struct Slice{ int start,count;
+        u64 *dN,*dNP,*dR1,*dR2,*dX0,*dZ0,*dA24,*ds,*dpr,*dZ1,*dG2; };
+    std::vector<Slice> sl(ndev);
+    bool ok=true;
+    auto t0=std::chrono::steady_clock::now();
+    for(int d=0;d<ndev;d++){
+        int start=d*per, count=ncurves-start; if(count>per) count=per;
+        sl[d].start=start; sl[d].count=count; if(count<=0) continue;
+        if(cudaSetDevice(d)!=cudaSuccess){ ok=false; break; }
+        size_t cb=(size_t)count*K*8; Slice&S=sl[d];
+        cudaMalloc(&S.dN,cb);cudaMalloc(&S.dNP,count*8);cudaMalloc(&S.dR1,cb);
+        cudaMalloc(&S.dR2,cb);cudaMalloc(&S.dX0,cb);cudaMalloc(&S.dZ0,cb);
+        cudaMalloc(&S.dA24,cb);cudaMalloc(&S.dZ1,cb);cudaMalloc(&S.dG2,cb);
+        cudaMalloc(&S.ds,ns>0?ns*8:8);cudaMalloc(&S.dpr,npr>0?npr*8:8);
+        cudaMemcpyAsync(S.dN,&Nv[start*K],cb,cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(S.dNP,&NPv[start],count*8,cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(S.dR1,&R1v[start*K],cb,cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(S.dR2,&R2v[start*K],cb,cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(S.dX0,&X0[start*K],cb,cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(S.dZ0,&Z0[start*K],cb,cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(S.dA24,&A24[start*K],cb,cudaMemcpyHostToDevice);
+        if(ns>0) cudaMemcpyAsync(S.ds,spow.data(),ns*8,cudaMemcpyHostToDevice);
+        if(npr>0) cudaMemcpyAsync(S.dpr,pr.data(),npr*8,cudaMemcpyHostToDevice);
+        int tpb=64, blk=(count+tpb-1)/tpb;
+        ecm_kernel2<K><<<blk,tpb>>>(S.dN,S.dNP,S.dR1,S.dR2,S.dX0,S.dZ0,S.dA24,
+                                    S.ds,ns,S.dpr,npr,S.dZ1,S.dG2,count);
+        cudaMemcpyAsync(&Z1[start*K],S.dZ1,cb,cudaMemcpyDeviceToHost);
+        cudaMemcpyAsync(&G2[start*K],S.dG2,cb,cudaMemcpyDeviceToHost);
+    }
+    for(int d=0;d<ndev;d++){
+        if(sl[d].count<=0) continue;
+        cudaSetDevice(d); cudaDeviceSynchronize();
+        if(cudaGetLastError()!=cudaSuccess) ok=false;
+        Slice&S=sl[d];
+        cudaFree(S.dN);cudaFree(S.dNP);cudaFree(S.dR1);cudaFree(S.dR2);cudaFree(S.dX0);
+        cudaFree(S.dZ0);cudaFree(S.dA24);cudaFree(S.dZ1);cudaFree(S.dG2);cudaFree(S.ds);cudaFree(S.dpr);
+    }
+    cudaSetDevice(0);
+    auto t1=std::chrono::steady_clock::now();
     double sec=std::chrono::duration<double>(t1-t0).count();
     cps = sec>0 ? ncurves/sec : 0;
+    if(ndev>1) printf("# using %d GPUs (%d curves each)\n", ndev, per);
     /* bit-exact self-check: re-run a subset on the CPU (ecm_run2 is host+device)
      * and compare z1/g2. The stage-2 BSGS is a new composition of the validated
      * primitives, so verify it every run (cheap; honors the fork's ethos). */
@@ -151,8 +173,7 @@ static bool ecm_pass(const mpz_t N, int ncurves,
             from_limbs(z,&G2[(size_t)i*K],K); mpz_gcd(g,z,N); add_factor(g);
         }
     }
-    cudaFree(dN);cudaFree(dNP);cudaFree(dR1);cudaFree(dR2);cudaFree(dX0);cudaFree(dZ0);
-    cudaFree(dA24);cudaFree(dZ1);cudaFree(dG2);cudaFree(ds);cudaFree(dpr);
+    /* per-slice device buffers were freed in the synchronize loop above */
     mpz_clears(t,R1m,R2m,g,z,NULL);
     return any;
 }
