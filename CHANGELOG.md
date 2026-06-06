@@ -104,9 +104,26 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   (`CADO_GPU_STATS`) confirm the steady loop skips **D2H 100% / H2D ~99%**. This
   eliminates the per-iteration PCIe transfers (the measured ~60% of SpMV time at
   c70/c80, growing with N), realising the ~2.6× SpMV-hot-loop win where linalg
-  dominates (large N / DLP). Remaining headroom: multi-GPU/MPI, `x_dotprod` on the
-  GPU (the lone surviving per-iteration D2H), and mksol. Default and DEVCOMM-only
-  paths are unchanged and bit-exact.
+  dominates (large N / DLP). Default and DEVCOMM-only paths are unchanged and
+  bit-exact.
+- **GPU `x_dotprod` — krylov's last per-iteration D2H removed.** The BW-sequence
+  gather (`xdotprod.cpp`) now runs on the device-resident vector
+  (`xdot_kernel`, GF(2), x-indices uploaded once and cached) instead of pulling
+  the whole vector back to host; `x_dotprod` is residency-aware (device gather, or
+  sync + host path if the device copy isn't current). `cado_gpu_residency_available`
+  (set by the backend iff both flags are on) gates the residency code paths so they
+  engage only in genuine residency runs. `product == N` 18/18 across modes × grids;
+  compute-sanitizer clean. With this the steady loop has **zero** per-iteration
+  host transfers.
+- **Multi-node MPI + per-rank multi-GPU.** The GPU backend builds and runs under
+  MPI (build fix: `--mpi` compile marker applied only to non-CUDA languages so
+  `matmul-gpu.cu` compiles under nvcc). `gpu_select_device()` binds each process to
+  a GPU by its node-local MPI rank (the standard one-rank-per-GPU model;
+  `CADO_GPU_DEVICE` overrides). Validated `product == N` with GPU SpMV under 2 MPI
+  ranks (`mpi=1x2`/`2x1`) in default, `DEVCOMM`, and `VECRESIDENT+DEVCOMM` modes —
+  the device comm safely falls back to the host comm for `njobs>1` (residency is
+  single-rank), so multi-rank runs stay correct. On a single GPU the device
+  selection is a no-op; it round-robins across GPUs on multi-GPU hardware.
 
 ### UI/UX (Track 3.1) — run-status reporting
 
