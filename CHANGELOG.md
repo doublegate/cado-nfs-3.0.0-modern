@@ -30,6 +30,20 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   `verification()` (which already computed achievement + ETA). Off by default; no
   behaviour change unless a flag is given. Validated on a 59-digit factorization.
 
+### GPU (Track 2.1) — pre-NFS factoring front-end (foundation)
+
+- **Multi-precision (K-limb) GPU ECM.** The existing GPU ECM
+  (`sieve/ecm/gpu_ecm.cu`) only handles moduli < 2^126 — useless for stripping a
+  factor from a real NFS-sized N, since ECM runs *modulo N*. `bench/gpu-ecm-mp.cu`
+  generalizes the validated 2-limb CIOS Montgomery and the Montgomery-curve XZ
+  ladder to K 64-bit limbs, so ECM stage-1 runs modulo a multi-hundred-bit N. The
+  same `__host__ __device__` code runs on CPU and GPU; **validated bit-exact**:
+  `montmul` 0/20000 wrong vs an independent binary-mulmod reference and ECM
+  0/512 GPU lanes differing from CPU, for 128/256/512-bit widths. Functionally it
+  **strips a planted ~20-bit factor from near-full-width composites** (~520k /
+  135k / 30k curves/s for 128/256/512-bit on an RTX 3090). This is the math
+  foundation for the standalone `--gpu-prefactor` stage.
+
 ## [3.0.0-modern] — 2026-06-05
 
 Rebases the modernization effort onto upstream CADO-NFS **3.0.0** and adds four
