@@ -316,6 +316,15 @@ int gpu_dev_ensure_impl(void const * host, size_t buf_bytes)
     return g.d != nullptr;
 }
 
+int gpu_dev_mark_resident_impl(void const * host, size_t buf_bytes)
+{
+    GDV & g = g_dv(host, buf_bytes);
+    if (!g.d) return 0;
+    g.current = true;       /* device buffer is the authoritative copy ... */
+    g.host_dirty = true;    /* ... and the host copy is now stale */
+    return 1;
+}
+
 /* install the hooks exactly once */
 void gpu_install_hooks() {
     static bool done = false;
@@ -329,6 +338,7 @@ void gpu_install_hooks() {
     cado_gpu_dev_download = gpu_dev_download_impl;
     cado_gpu_dev_sync = gpu_dev_sync_impl;
     cado_gpu_dev_ensure = gpu_dev_ensure_impl;
+    cado_gpu_dev_mark_resident = gpu_dev_mark_resident_impl;
     done = true;
 }
 } // namespace
@@ -351,6 +361,8 @@ struct matmul_gpu : public matmul_interface {
      * upload (bit-identical). */
     /* split-timing accumulators (ms), used when CADO_GPU_TIMING is set */
     double t_h2d = 0, t_ker = 0, t_d2h = 0; long t_n = 0;
+    /* transfer counters (CADO_GPU_STATS): how often residency skips H2D/D2H */
+    long n_mul = 0, n_h2d = 0, n_d2h = 0;
 
     void build_cache(matrix_u32 &&) override;
     int reload_cache_private() override;
@@ -459,16 +471,27 @@ void matmul_gpu<Arith>::mul(void * xdst, void const * xsrc, int d)
     g_pin(xsrc, srcbytes);
     g_pin(xdst, dstbytes);
 
-    static const bool resident = getenv("CADO_GPU_VECRESIDENT") != nullptr;
+    static const bool resident_env = getenv("CADO_GPU_VECRESIDENT") != nullptr;
     static const bool timing = getenv("CADO_GPU_TIMING") != nullptr;
-    bool skip_h2d = resident && sv.current;     /* device copy of src is up to date */
+    /* Residency is only active inside the krylov inner loop (cado_gpu_residency_active,
+     * set by krylov.cpp) so prep/secure/twist stay host-authoritative. When active:
+     * skip H2D if the device src is current, and skip D2H entirely — the dst stays
+     * device-resident (host copy marked stale for cado_gpu_sync_to_host). */
+    bool const residency = resident_env && cado_gpu_residency_active;
+    bool skip_h2d = residency && sv.current;     /* device copy of src is up to date */
 
+    n_mul++;
     if (!timing) {
-        if (!skip_h2d) { CUCHECK(cudaMemcpy(sv.d, xsrc, srcbytes, cudaMemcpyHostToDevice)); sv.current = true; }
+        if (!skip_h2d) { CUCHECK(cudaMemcpy(sv.d, xsrc, srcbytes, cudaMemcpyHostToDevice)); sv.current = true; n_h2d++; }
         launch_spmv(K, d_rp[dir], d_col[dir], sv.d, wv.d, nrows);
         CUCHECK(cudaGetLastError());
-        CUCHECK(cudaMemcpy(xdst, wv.d, dstbytes, cudaMemcpyDeviceToHost));
-        wv.current = true;                      /* device buffer == host buffer now */
+        if (residency) {
+            wv.current = true; wv.host_dirty = true;   /* dst left on device, host stale */
+        } else {
+            CUCHECK(cudaMemcpy(xdst, wv.d, dstbytes, cudaMemcpyDeviceToHost));
+            wv.current = true; wv.host_dirty = false;  /* device buffer == host buffer now */
+            n_d2h++;
+        }
     } else {
         cudaEvent_t e0, e1, e2, e3;
         cudaEventCreate(&e0); cudaEventCreate(&e1); cudaEventCreate(&e2); cudaEventCreate(&e3);
@@ -506,6 +529,12 @@ matmul_gpu<Arith>::~matmul_gpu()
                 "%.3f ms, D2H %.3f ms (per call); transfers %.0f%%\n",
                 t_n, t_h2d / t_n, t_ker / t_n, t_d2h / t_n,
                 100.0 * (t_h2d + t_d2h) / (t_h2d + t_ker + t_d2h));
+    }
+    if (n_mul && getenv("CADO_GPU_STATS")) {
+        fprintf(stderr, "# matmul-gpu transfers over %ld SpMV: H2D %ld (%.0f%% skipped), "
+                "D2H %ld (%.0f%% skipped)\n", n_mul,
+                n_h2d, 100.0 * (n_mul - n_h2d) / n_mul,
+                n_d2h, 100.0 * (n_mul - n_d2h) / n_mul);
     }
     for (int i = 0; i < 2; i++) { if (d_rp[i]) cudaFree(d_rp[i]); if (d_col[i]) cudaFree(d_col[i]); }
     /* g_pool / g_pinned are process-global (shared across sibling-thread mm's);

@@ -70,4 +70,19 @@ extern int (*cado_gpu_dev_sync)(void);
  * in-flight copy into the same buffer. Returns 1 on success, 0 on alloc failure. */
 extern int (*cado_gpu_dev_ensure)(void const * host, size_t buf_bytes);
 
+/* ---- full vector residency (Track 2.2, the transfer-eliminating win) ----
+ * When nonzero, the GPU backend keeps the BWC vectors device-resident across the
+ * steady krylov iteration: mul() skips its H2D (src already on device) and D2H
+ * (dst left on device), and the device comm skips its host upload/writeback. The
+ * host copies go stale (host_dirty); host-read sites must call cado_gpu_sync_to_host
+ * first. This is scoped to the krylov inner loop (set/cleared by krylov.cpp) so
+ * prep/secure/twist — which overwrite host buffers without invalidation — stay on
+ * the safe host-authoritative path. Requires CADO_GPU_VECRESIDENT + CADO_GPU_DEVCOMM. */
+extern int cado_gpu_residency_active;
+
+/* Mark the device buffer for `host` as the authoritative copy (current, and the
+ * host copy stale) without any transfer — used by the device comm to leave its
+ * result device-resident in residency mode. Returns 1 on success, 0 otherwise. */
+extern int (*cado_gpu_dev_mark_resident)(void const * host, size_t buf_bytes);
+
 #endif /* CADO_MATMUL_GPU_HOOKS_H */

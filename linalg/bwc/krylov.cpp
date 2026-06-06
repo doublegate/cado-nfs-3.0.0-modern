@@ -21,6 +21,7 @@
 #include "macros.h"
 #include "matmul_top.hpp"
 #include "matmul_top_vec.hpp"
+#include "matmul-gpu-hooks.h"   // GPU full-vector-residency scoping (Track 2.2)
 #include "mmt_vector_pair.hpp"
 #include "parallelizing_info.hpp"
 #include "params.hpp"
@@ -294,8 +295,14 @@ static void * krylov_prog(parallelizing_info_ptr pi, cxx_param_list & pl, void *
         A->vec_set_zero(xymats, bw->m*bw->interval);
         serialize(pi->m);
         pi_interleaving_flip(pi);
+        /* GPU full vector residency (Track 2.2): keep the BWC vectors device-
+         * resident across the steady iteration so mul()+comm skip their H2D/D2H.
+         * Scoped to this inner loop only — prep/secure/twist stay host-authoritative.
+         * The one per-iteration host read (x_dotprod) is materialised first. */
+        cado_gpu_residency_active = 1;
         for(int i = 0 ; i < bw->interval ; i++) {
             /* Compute the product by x */
+            if (cado_gpu_sync_to_host) cado_gpu_sync_to_host(ymy[0].v);
             x_dotprod(A->vec_subvec(xymats, i * bw->m),
                     gxvecs, 0, bw->m, nx, ymy[0], 1);
 
@@ -303,6 +310,10 @@ static void * krylov_prog(parallelizing_info_ptr pi, cxx_param_list & pl, void *
 
             timing_check(pi, timing, s+i+1, tcan_print);
         }
+        /* Leave residency: materialise the final vector so the check / untwist /
+         * save below (and the next block's twist) read correct host data. */
+        cado_gpu_residency_active = 0;
+        if (cado_gpu_sync_to_host) cado_gpu_sync_to_host(ymy[0].v);
         serialize(pi->m);
 
         /* See remark above. */

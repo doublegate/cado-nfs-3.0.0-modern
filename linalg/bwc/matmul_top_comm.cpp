@@ -28,6 +28,8 @@ int (*cado_gpu_dev_upload)(void const *, size_t) = nullptr;
 int (*cado_gpu_dev_download)(void *, size_t) = nullptr;
 int (*cado_gpu_dev_sync)(void) = nullptr;
 int (*cado_gpu_dev_ensure)(void const *, size_t) = nullptr;
+int cado_gpu_residency_active = 0;
+int (*cado_gpu_dev_mark_resident)(void const *, size_t) = nullptr;
 
 /* Our innermost communication routines are essentially all-gather and
  * reduce-scatter, following the MPI terminology. We provide several
@@ -887,7 +889,13 @@ int matmul_top_mul_comm_gpu(mmt_vec & v, mmt_vec & w)
      * buffer grow (cudaFree+cudaMalloc) on the shared v.v -> use-after-free. We
      * size it here, barriered, so no grow happens during the data phases. For a
      * shared v.v only one thread (trank_v==0) sizes it (no concurrent grow). */
-    if (!cado_gpu_dev_upload(w.v, wbuf)) return 0;
+    /* In residency mode mul() left w device-resident (host stale), so we must NOT
+     * upload w from host — the device copy is authoritative. Otherwise (no-trust)
+     * the host is authoritative and we upload it. */
+    bool const residency = cado_gpu_residency_active != 0;
+    if (!residency) {
+        if (!cado_gpu_dev_upload(w.v, wbuf)) return 0;
+    }
     if (!v_shared || trank_v == 0) {
         if (cado_gpu_dev_ensure && !cado_gpu_dev_ensure(v.v, vbuf)) return 0;
     }
@@ -933,10 +941,15 @@ int matmul_top_mul_comm_gpu(mmt_vec & v, mmt_vec & w)
     }
     v.consistency = 2;
 
-    /* Phase 5: write the result back to host (no-trust; device non-authoritative).
+    /* Phase 5: leave the result where it belongs. In residency mode keep v
+     * device-resident (host stale, materialised later by cado_gpu_sync_to_host);
+     * otherwise (no-trust) write it back to host so the host stays authoritative.
      * For a shared v the buffer is common to the v.d communicator, so a single
-     * thread (trank_v==0) downloads it; otherwise every thread downloads its own. */
-    if (!v_shared) {
+     * thread (trank_v==0) handles it; otherwise every thread handles its own. */
+    if (residency) {
+        if ((!v_shared || trank_v == 0) && cado_gpu_dev_mark_resident
+                && !cado_gpu_dev_mark_resident(v.v, vbuf)) return 0;
+    } else if (!v_shared) {
         if (!cado_gpu_dev_download(v.v, vbuf)) return 0;
     } else {
         if (trank_v == 0 && !cado_gpu_dev_download(v.v, vbuf)) return 0;

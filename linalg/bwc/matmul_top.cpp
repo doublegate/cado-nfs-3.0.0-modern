@@ -29,6 +29,7 @@
 #include "matmul.hpp"
 #include "matmul_top.hpp"
 #include "matmul_top_comm.hpp"
+#include "matmul-gpu-hooks.h"   // cado_gpu_residency_active (Track 2.2)
 #include "matmul_top_vec.hpp"
 #include "matrix_u32.hpp"
 #include "mf_bal.hpp"
@@ -158,13 +159,19 @@ void matmul_top_mul(matmul_top_data & mmt, mmt_vec * v, struct timing_data * tt)
         if (last && nmats_odd) {
             ASSERT_ALWAYS(lnext == mmt.matrices.size());
             matmul_top_mul_comm(v[0], dst);
-            /* the comm wrote v[0] and dst on the host: a device-resident backend
-             * must re-upload them on next use (no-op for CPU backends). */
-            mmt.matrices[midx].mm->host_vector_modified(v[0].v);
-            mmt.matrices[midx].mm->host_vector_modified(dst.v);
+            /* The comm wrote v[0]/dst on the host, so a device-resident backend
+             * must re-upload on next use (no-op for CPU backends) — UNLESS full
+             * vector residency is active, in which case the comm deliberately left
+             * the result device-resident (host stale) and we must NOT invalidate
+             * its device copy. */
+            if (!cado_gpu_residency_active) {
+                mmt.matrices[midx].mm->host_vector_modified(v[0].v);
+                mmt.matrices[midx].mm->host_vector_modified(dst.v);
+            }
         } else {
             mmt_vec_allreduce(dst);
-            mmt.matrices[midx].mm->host_vector_modified(dst.v);
+            if (!cado_gpu_residency_active)
+                mmt.matrices[midx].mm->host_vector_modified(dst.v);
         }
         timing_next_timer(tt);
         /* now measuring jitter */
