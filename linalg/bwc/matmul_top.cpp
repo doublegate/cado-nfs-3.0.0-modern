@@ -158,8 +158,13 @@ void matmul_top_mul(matmul_top_data & mmt, mmt_vec * v, struct timing_data * tt)
         if (last && nmats_odd) {
             ASSERT_ALWAYS(lnext == mmt.matrices.size());
             matmul_top_mul_comm(v[0], dst);
+            /* the comm wrote v[0] and dst on the host: a device-resident backend
+             * must re-upload them on next use (no-op for CPU backends). */
+            mmt.matrices[midx].mm->host_vector_modified(v[0].v);
+            mmt.matrices[midx].mm->host_vector_modified(dst.v);
         } else {
             mmt_vec_allreduce(dst);
+            mmt.matrices[midx].mm->host_vector_modified(dst.v);
         }
         timing_next_timer(tt);
         /* now measuring jitter */
@@ -537,11 +542,14 @@ void mmt_vec_apply_S(matmul_top_data & mmt, int midx, mmt_vec & y)
 void mmt_vec_twist(matmul_top_data & mmt, mmt_vec & y)
 {
     mmt_vec_unapply_S(mmt, y.d == 0 ? 0 : (mmt.matrices.size()-1), y);
+    /* y.v was permuted on the host: invalidate any device-resident copy. */
+    for (auto const & M : mmt.matrices) M.mm->host_vector_modified(y.v);
 }
 
 void mmt_vec_untwist(matmul_top_data & mmt, mmt_vec & y)
 {
     mmt_vec_apply_S(mmt, y.d == 0 ? 0 : (mmt.matrices.size()-1), y);
+    for (auto const & M : mmt.matrices) M.mm->host_vector_modified(y.v);
 }
 
 /* {{{ mmt_vec_{un,}appy_T -- this applies the fixed column

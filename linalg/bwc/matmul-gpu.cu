@@ -118,8 +118,19 @@ struct matmul_gpu : public matmul_interface {
     uint32_t * d_rp[2] = { nullptr, nullptr };
     uint32_t * d_col[2] = { nullptr, nullptr };
     unsigned int nrows_dir[2] = { 0, 0 };
-    uint64_t * d_src = nullptr; size_t cap_src = 0;
-    uint64_t * d_dst = nullptr; size_t cap_dst = 0;
+    /* persistent per-host-vector device buffer pool. With CADO_GPU_VECRESIDENT
+     * set, a buffer flagged `current` (device == host) lets mul() skip the H2D
+     * upload; host_vector_modified() clears the flag when the caller writes the
+     * host buffer (the comm / twist). Default (flag unset): always upload, so
+     * behaviour is bit-identical to before. */
+    struct DV { uint64_t * d = nullptr; size_t bytes = 0; bool current = false; };
+    std::map<const void *, DV> pool;
+    DV & dv_for(const void * host, size_t bytes) {
+        DV & x = pool[host];
+        if (x.bytes < bytes) { if (x.d) cudaFree(x.d); CUCHECK(cudaMalloc(&x.d, bytes));
+            x.bytes = bytes; x.current = false; }
+        return x;
+    }
 
     /* BWC reuses the same host vector buffers across the thousands of SpMV
      * iterations, so we page-lock (pin) each one the first time we see it ->
@@ -148,6 +159,7 @@ struct matmul_gpu : public matmul_interface {
     int reload_cache_private() override;
     void save_cache_private() override;
     void mul(void *, const void *, int) override;
+    void host_vector_modified(void const *) override;
     void ensure_device();
     ~matmul_gpu() override;
 
@@ -243,29 +255,32 @@ void matmul_gpu<Arith>::mul(void * xdst, void const * xsrc, int d)
 
     size_t srcbytes = (size_t) ncols * K * sizeof(uint64_t);
     size_t dstbytes = (size_t) nrows * K * sizeof(uint64_t);
-    if (cap_src < srcbytes) { if (d_src) cudaFree(d_src); CUCHECK(cudaMalloc(&d_src, srcbytes)); cap_src = srcbytes; }
-    if (cap_dst < dstbytes) { if (d_dst) cudaFree(d_dst); CUCHECK(cudaMalloc(&d_dst, dstbytes)); cap_dst = dstbytes; }
+    DV & sv = dv_for(xsrc, srcbytes);
+    DV & wv = dv_for(xdst, dstbytes);
 
     ensure_pinned(xsrc, srcbytes);
     ensure_pinned(xdst, dstbytes);
 
-    /* optional split-timing (CADO_GPU_TIMING=1): transfer vs kernel, to decide
-     * whether the backend is transfer- or kernel-bound after pinning. */
+    static const bool resident = getenv("CADO_GPU_VECRESIDENT") != nullptr;
     static const bool timing = getenv("CADO_GPU_TIMING") != nullptr;
+    bool skip_h2d = resident && sv.current;     /* device copy of src is up to date */
+
     if (!timing) {
-        CUCHECK(cudaMemcpy(d_src, xsrc, srcbytes, cudaMemcpyHostToDevice));
-        launch_spmv(K, d_rp[dir], d_col[dir], d_src, d_dst, nrows);
+        if (!skip_h2d) { CUCHECK(cudaMemcpy(sv.d, xsrc, srcbytes, cudaMemcpyHostToDevice)); sv.current = true; }
+        launch_spmv(K, d_rp[dir], d_col[dir], sv.d, wv.d, nrows);
         CUCHECK(cudaGetLastError());
-        CUCHECK(cudaMemcpy(xdst, d_dst, dstbytes, cudaMemcpyDeviceToHost));
+        CUCHECK(cudaMemcpy(xdst, wv.d, dstbytes, cudaMemcpyDeviceToHost));
+        wv.current = true;                      /* device buffer == host buffer now */
     } else {
         cudaEvent_t e0, e1, e2, e3;
         cudaEventCreate(&e0); cudaEventCreate(&e1); cudaEventCreate(&e2); cudaEventCreate(&e3);
         cudaEventRecord(e0);
-        CUCHECK(cudaMemcpy(d_src, xsrc, srcbytes, cudaMemcpyHostToDevice));
+        if (!skip_h2d) { CUCHECK(cudaMemcpy(sv.d, xsrc, srcbytes, cudaMemcpyHostToDevice)); sv.current = true; }
         cudaEventRecord(e1);
-        launch_spmv(K, d_rp[dir], d_col[dir], d_src, d_dst, nrows);
+        launch_spmv(K, d_rp[dir], d_col[dir], sv.d, wv.d, nrows);
         cudaEventRecord(e2);
-        CUCHECK(cudaMemcpy(xdst, d_dst, dstbytes, cudaMemcpyDeviceToHost));
+        CUCHECK(cudaMemcpy(xdst, wv.d, dstbytes, cudaMemcpyDeviceToHost));
+        wv.current = true;
         cudaEventRecord(e3);
         cudaEventSynchronize(e3);
         float h2d, ker, d2h;
@@ -280,6 +295,13 @@ void matmul_gpu<Arith>::mul(void * xdst, void const * xsrc, int d)
 }
 
 template<typename Arith>
+void matmul_gpu<Arith>::host_vector_modified(void const * hostvec)
+{
+    auto it = pool.find(hostvec);
+    if (it != pool.end()) it->second.current = false;
+}
+
+template<typename Arith>
 matmul_gpu<Arith>::~matmul_gpu()
 {
     if (t_n) {
@@ -289,8 +311,7 @@ matmul_gpu<Arith>::~matmul_gpu()
                 100.0 * (t_h2d + t_d2h) / (t_h2d + t_ker + t_d2h));
     }
     for (int i = 0; i < 2; i++) { if (d_rp[i]) cudaFree(d_rp[i]); if (d_col[i]) cudaFree(d_col[i]); }
-    if (d_src) cudaFree(d_src);
-    if (d_dst) cudaFree(d_dst);
+    for (auto const & kv : pool) if (kv.second.d) cudaFree(kv.second.d);
     for (auto const & kv : pinned) cudaHostUnregister((void *) kv.first);
 }
 

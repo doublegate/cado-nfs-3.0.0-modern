@@ -166,13 +166,30 @@ single increment. The honest sequence:
 Approach: each device-side primitive is built and validated **standalone first**
 (no risk to real runs), then wired into the resident loop, with a full verified
 factorization (`product == N`) as the gate at integration. **All three primitives
-are now ready and bit-exact**: the coalesced SpMV kernel, `x_dotprod`, and the
-intra-node reduce/broadcast. The remaining work is the *wiring* — a device-
-resident `mmt_vec` shadow that holds the vectors on the GPU across the inner loop
-and routes the SpMV / dot-product / reduction through the device kernels above,
-syncing host only per-interval (twist/save) and for real MPI. That integration
-(`krylov.cpp` + `matmul_top*.cpp` + the backend, gated by `product == N`) is the
-multi-file core still ahead.
+are ready and bit-exact**: the coalesced SpMV kernel, `x_dotprod`, and the
+intra-node reduce/broadcast.
+
+### Wiring — the device-residency control plane (done, `product == N`)
+
+`matmul_interface` gains a `host_vector_modified(hostptr)` hook (no-op for CPU
+backends). The GPU backend keeps a **persistent per-host-vector device buffer
+pool** with a `current` flag; with `CADO_GPU_VECRESIDENT=1` a current buffer lets
+`mul()` skip the H2D upload, and `host_vector_modified` clears the flag.
+`matmul_top` calls the hook at every host write — after the comm
+(`mmt_vec_allreduce` / `matmul_top_mul_comm`) and after `mmt_vec_twist/untwist`.
+**Both modes verified by a real factorization** (`tasks.linalg.bwc.mm_impl=gpu`,
+59-digit): default mode is bit-identical, and **resident-skip mode also returns
+`product == N`** — proving the invalidation coverage is complete for the krylov
+path (no missed host write).
+
+But the skip is **correct yet inert**: the comm runs after *every* SpMV and
+invalidates the src, so it is always re-uploaded — the H2D share does not drop.
+This empirically confirms the analysis: **the win requires moving the comm itself
+onto the device** (using the validated reduce/broadcast kernel), so the vector
+stays device-authoritative through the comm and the (already-proven-correct) skip
+finally triggers. That is the next, now-localized step. The remaining pieces are
+then the per-interval host syncs (twist/save) and GPU `x_dotprod`, all on a
+control plane whose correctness is already gated by `product == N`.
 
 Each step is correctness-gated by a full verified factorization. Until then, the
 backend captures the bounded win (pinning) and is bit-exact.

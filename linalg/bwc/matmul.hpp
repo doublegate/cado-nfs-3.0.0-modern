@@ -70,6 +70,13 @@ struct matmul_interface : public matmul_public {
      */
     virtual void mul(void * dst, const void * src, int d) = 0;
 
+    /* Optional device-residency hook (default no-op). A device backend may keep
+     * a device-resident copy of a host vector across mul() calls; the caller
+     * must notify it whenever it writes the host buffer (the comm, twist, ...)
+     * so the device copy is re-uploaded on next use. CPU backends ignore this.
+     * v3.1.0-modern Track 2.2 (full-vector-residency port). */
+    virtual void host_vector_modified(void const *) {}
+
     virtual void report(double) {}
 
     /* matmul_aux is used on some occasions for obtaining private
