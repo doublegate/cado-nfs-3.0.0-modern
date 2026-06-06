@@ -106,7 +106,8 @@ static void * mksol_prog(parallelizing_info_ptr pi, cxx_param_list & pl, void * 
     unsigned int const Kc = char2 ? (Av->simd_groupsize() / 64) : 0;
     unsigned int const Lc = char2 ? (As->simd_groupsize() / 64) : 0;
     bool const mksol_residency_ok = cado_gpu_residency_available
-        && cado_gpu_addmul_tiny != nullptr && char2 && mmt_vec_is_shared(ymy[0]);
+        && cado_gpu_addmul_tiny != nullptr && char2 && mmt_vec_is_shared(ymy[0])
+        && mmt.pi->wr[0]->njobs == 1 && mmt.pi->wr[1]->njobs == 1;  /* single node */
 
     /* {{{ For the vectors which we read from disk and which participate in
      *   the coefficients which get added to the computation at each

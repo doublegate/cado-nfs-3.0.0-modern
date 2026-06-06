@@ -91,7 +91,14 @@ void g_pin(const void * p, size_t bytes) {
 void g_invalidate(const void * host) {
     std::lock_guard<std::mutex> lk(g_mtx);
     auto it = g_pool.find(host);
-    if (it != g_pool.end()) it->second.current = false;
+    if (it != g_pool.end()) {
+        /* The host buffer was just written (twist, or the MPI host comm), so the
+         * host is authoritative: the device copy is stale AND not newer than host
+         * (clearing host_dirty stops a later sync_to_host from D2H'ing stale device
+         * data over the valid host buffer). */
+        it->second.current = false;
+        it->second.host_dirty = false;
+    }
 }
 } // namespace
 

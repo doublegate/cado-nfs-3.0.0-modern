@@ -90,7 +90,8 @@ static void * sec_prog(parallelizing_info_ptr pi, cxx_param_list & pl, void * ar
     unsigned int const Kc = char2_s ? (A->simd_groupsize() / 64) : 0;
     unsigned int const Lc = char2_s ? (A->simd_groupsize() / 64) : 0;
     bool const secure_residency_ok = cado_gpu_residency_available
-        && cado_gpu_addmul_tiny != nullptr && char2_s && mmt_vec_is_shared(dvec);
+        && cado_gpu_addmul_tiny != nullptr && char2_s && mmt_vec_is_shared(dvec)
+        && mmt.pi->wr[0]->njobs == 1 && mmt.pi->wr[1]->njobs == 1;  /* single node */
 
     unsigned int const unpadded = MAX(mmt.n0[0], mmt.n0[1]);
 

@@ -299,7 +299,11 @@ static void * krylov_prog(parallelizing_info_ptr pi, cxx_param_list & pl, void *
          * resident across the steady iteration so mul()+comm skip their H2D/D2H.
          * Scoped to this inner loop only — prep/secure/twist stay host-authoritative.
          * The one per-iteration host read (x_dotprod) is materialised first. */
-        cado_gpu_residency_active = cado_gpu_residency_available;
+        /* Residency is a single-node win (the device comm is njobs==1 only); under
+         * MPI it cleanly disables, falling back to the validated GPU-SpMV + host-comm
+         * path. Multi-node residency needs the local-device/MPI-data split (future). */
+        cado_gpu_residency_active = (cado_gpu_residency_available
+                && pi->wr[0]->njobs == 1 && pi->wr[1]->njobs == 1) ? 1 : 0;
         for(int i = 0 ; i < bw->interval ; i++) {
             /* Compute the product by x. x_dotprod is residency-aware: it gathers
              * directly off the device-resident ymy[0] (or syncs + uses the host
