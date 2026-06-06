@@ -187,6 +187,25 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   `verification()` (which already computed achievement + ETA). Off by default; no
   behaviour change unless a flag is given. Validated on a 59-digit factorization.
 
+### UI/UX (Track 3.2) — /status endpoint + dashboard
+
+- **`GET /status` on both servers.** The Flask work-unit server
+  (`api_server.py`) serves the live `cado-nfs-status/1` snapshot (state, phase +
+  index/total, percent, ETA, work-unit counts, factors) straight from the
+  in-process status singleton, and the Rust `cado-wu-server` serves a
+  `cado-nfs-wu-status/1` snapshot (work-units total/available/assigned/ok/error/
+  done + percent + serving flag) computed from the wudb it already owns. Both
+  reuse data the servers already hold — no new bookkeeping.
+- **`GET /dashboard`** (Flask) is a dependency-free single-page view that polls
+  `/status` every 2 s and renders phase / progress bar / ETA / work-units /
+  factors. Inline HTML, no static-asset plumbing.
+- The Track 3.1 status reporter (`status.py`) now **tracks state in memory
+  unconditionally** (the file/stderr *output* stays gated on
+  `--json-status`/`--progress`), so `/status` is live even when no status flag was
+  passed. Validated live: a running c90 factorization reported phase "Polynomial
+  Selection (root optimized)" [2/12] via `GET /status`; the Rust endpoint reported
+  correct per-status work-unit counts against a seeded wudb.
+
 ### UI/UX (Track 3.3) — parameter interpolation
 
 - **Parameter interpolation instead of a hard error.** When no preset parameter

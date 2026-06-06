@@ -76,8 +76,9 @@ class _Reporter:
     # -- updates (called from the orchestration; cheap no-ops if disabled) ----
 
     def set_phase(self, title, index=None, total=None):
-        if not self._enabled:
-            return
+        # The in-memory state is tracked unconditionally (cheap) so an in-process
+        # reader (the /status endpoint, Track 3.2) always sees live progress; only
+        # the file/stderr *output* is gated, inside _flush_locked.
         with self._lock:
             self._state.update({
                 "phase": title,
@@ -93,8 +94,6 @@ class _Reporter:
 
     def update_progress(self, percent=None, eta=None, wu_done=None,
                         wu_total=None):
-        if not self._enabled:
-            return
         with self._lock:
             if percent is not None:
                 # CADO's own achievement estimate can briefly overshoot 100%
@@ -111,8 +110,6 @@ class _Reporter:
             self._flush_locked()
 
     def finish(self, factors=None, state="done"):
-        if not self._enabled:
-            return
         with self._lock:
             self._state.update({
                 "state": state,

@@ -78,6 +78,60 @@ swagger_template = {
 HAVE_SSL = 'ssl' in sys.modules
 
 
+# Minimal, dependency-free dashboard served at /dashboard (Track 3.2). It polls
+# /status every 2s and renders the cado-nfs-status/1 snapshot. Kept inline so the
+# server stays a single file with no static-asset plumbing.
+_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>cado-nfs status</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+ body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:640px;color:#222}
+ h1{font-size:1.3rem} .phase{font-size:1.1rem;margin:.5rem 0}
+ .bar{height:1.4rem;background:#eee;border-radius:.3rem;overflow:hidden}
+ .fill{height:100%;background:#3b82f6;width:0;transition:width .4s}
+ table{border-collapse:collapse;margin-top:1rem;width:100%}
+ td{padding:.25rem .5rem;border-bottom:1px solid #eee} td:first-child{color:#666;width:9rem}
+ .factors{font-family:monospace;word-break:break-all} .state{font-weight:600}
+ .done{color:#16a34a}.error{color:#dc2626}.running{color:#2563eb}
+</style></head><body>
+<h1>cado-nfs &mdash; <span id="name"></span></h1>
+<div class="phase"><span id="phase">connecting...</span>
+ <span id="pct"></span></div>
+<div class="bar"><div class="fill" id="fill"></div></div>
+<table>
+ <tr><td>state</td><td class="state" id="state"></td></tr>
+ <tr><td>computation</td><td id="comp"></td></tr>
+ <tr><td>input digits</td><td id="digits"></td></tr>
+ <tr><td>work units</td><td id="wu"></td></tr>
+ <tr><td>ETA</td><td id="eta"></td></tr>
+ <tr><td>factors</td><td class="factors" id="factors"></td></tr>
+ <tr><td>updated</td><td id="updated"></td></tr>
+</table>
+<script>
+function setText(id,v){document.getElementById(id).textContent=(v==null?"":v)}
+async function poll(){
+ try{
+  const r=await fetch("status",{cache:"no-store"}); const s=await r.json();
+  setText("name",s.name); setText("comp",s.computation);
+  setText("digits",s.input_digits);
+  let ph=s.phase||"";
+  if(s.phase_index&&s.phase_total) ph="["+s.phase_index+"/"+s.phase_total+"] "+ph;
+  setText("phase",ph);
+  const p=s.phase_percent; setText("pct",p==null?"":p.toFixed(1)+"%");
+  document.getElementById("fill").style.width=(p==null?0:p)+"%";
+  const st=document.getElementById("state"); st.textContent=s.state||"";
+  st.className="state "+(s.state||"");
+  setText("wu",(s.wu_done!=null&&s.wu_total)?s.wu_done+" / "+s.wu_total:"");
+  setText("eta",s.eta); setText("updated",s.updated);
+  setText("factors",s.factors?s.factors.join("  "):"");
+ }catch(e){setText("phase","(server unreachable)")}
+}
+poll(); setInterval(poll,2000);
+</script></body></html>
+"""
+
+
 class ApiServer(flask.Flask):
     """
     This is the cado-nfs api server. Its job is only to handle
@@ -427,6 +481,8 @@ recent than 3.1.3) fixes this.
         self.route("/file/<path:path>")(self.api_download_file)
         self.route("/files")(self.api_list_all_files)
         self.route("/upload", methods=["POST"])(self.api_upload_file)
+        self.route("/status")(self.api_status)
+        self.route("/dashboard")(self.api_dashboard)
 
     def api_errorhandler(self, e):
         """
@@ -475,6 +531,24 @@ recent than 3.1.3) fixes this.
         resp = {'message': "Hello, World!"}
 
         return flask.json.jsonify(resp), 200
+
+    def api_status(self):
+        """
+        Machine-readable run status (Track 3.2): the same snapshot the
+        ``--json-status`` reporter produces (schema ``cado-nfs-status/1`` — state,
+        phase + index/total, percent, ETA, work-unit counts, factors), served live
+        from the in-process status singleton. Always available (the reporter tracks
+        in memory even without ``--json-status``).
+        """
+        from cadofactor.status import STATUS
+        return flask.json.jsonify(STATUS.snapshot()), 200
+
+    def api_dashboard(self):
+        """
+        A minimal dependency-free single-page dashboard that polls ``/status``
+        every two seconds and renders phase / percent / ETA / work-units / factors.
+        """
+        return flask.Response(_DASHBOARD_HTML, mimetype="text/html")
 
     def api_get_workunit(self):
         """

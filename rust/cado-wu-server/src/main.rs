@@ -116,6 +116,7 @@ async fn main() -> Result<()> {
         // path settings, so only upload is affected.)
         .route("//upload", post(upload))
         .route("/control", post(control))
+        .route("/status", get(status))
         .fallback(fallback_404)
         .layer(axum::middleware::from_fn_with_state(state.clone(), whitelist_mw))
         .with_state(state);
@@ -294,6 +295,53 @@ async fn list_files(State(s): State<Arc<AppState>>) -> Response {
         }
     }
     axum::Json(names).into_response()
+}
+
+// GET /status -- work-unit progress for dashboards/tooling (Track 3.2). The Rust
+// server has no view of the orchestration's phase/ETA (that lives in the Python
+// driver's status reporter and its --json-status file), but it owns the wudb, so
+// it reports live work-unit counts by status plus the serving flag. Reuses the
+// same SQLite the /workunit and /upload handlers read.
+async fn status(State(s): State<Arc<AppState>>) -> Response {
+    let Ok(conn) = s.pool.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "db unavailable").into_response();
+    };
+    let count = |st: i64| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM workunits WHERE status=?1",
+            [st],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    };
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM workunits", [], |r| r.get(0))
+        .unwrap_or(0);
+    let available = count(AVAILABLE);
+    let assigned = count(ASSIGNED);
+    let ok = count(RECEIVED_OK);
+    let error = count(RECEIVED_ERROR);
+    let done = ok + error;
+    let percent = if total > 0 {
+        (done as f64) * 100.0 / (total as f64)
+    } else {
+        0.0
+    };
+    axum::Json(serde_json::json!({
+        "schema": "cado-nfs-wu-status/1",
+        "server": "cado-wu-server-rs",
+        "serving": s.serving.load(Ordering::Relaxed),
+        "workunits": {
+            "total": total,
+            "available": available,
+            "assigned": assigned,
+            "ok": ok,
+            "error": error,
+            "done": done,
+        },
+        "percent": (percent * 10.0).round() / 10.0,
+    }))
+    .into_response()
 }
 
 // POST /control -- finish or resume serving work-units. Guarded by --admin-token
