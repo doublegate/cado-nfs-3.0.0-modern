@@ -325,6 +325,81 @@ int gpu_dev_mark_resident_impl(void const * host, size_t buf_bytes)
     return 1;
 }
 
+/* ---- GPU x_dotprod (gather the BW sequence off a device-resident vector) ---- */
+std::map<const void *, std::pair<uint32_t *, size_t>> g_xv;   /* uploaded x-index cache */
+uint32_t * g_xv_dev(const uint32_t * host, size_t n) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    auto & e = g_xv[host];
+    if (e.second < n) {
+        if (e.first) cudaFree(e.first);
+        if (cudaMalloc(&e.first, n * sizeof(uint32_t)) != cudaSuccess) { e.first = nullptr; e.second = 0; return nullptr; }
+        e.second = n;
+        if (cudaMemcpy(e.first, host, n * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess) return nullptr;
+    }
+    return e.first;
+}
+
+/* one thread per output row j in [j0,j1): dst[(j-j0)] = XOR over the nx sparse
+ * positions i=xv[j*nx+t] in [vi0,vi1) of v[i - v_i0]. Mirrors xdotprod.cpp (GF2). */
+template<int K>
+__global__ void xdot_kernel(uint64_t * dst, const uint32_t * xv,
+                            unsigned int j0, unsigned int j1, unsigned int nx,
+                            const uint64_t * v, unsigned int v_i0,
+                            unsigned int vi0, unsigned int vi1)
+{
+    unsigned int j = blockIdx.x * blockDim.x + threadIdx.x + j0;
+    if (j >= j1) return;
+    uint64_t acc[K];
+#pragma unroll
+    for (int k = 0; k < K; k++) acc[k] = 0;
+    for (unsigned int t = 0; t < nx; t++) {
+        uint32_t i = xv[(size_t) j * nx + t];
+        if (i < vi0 || i >= vi1) continue;
+        const uint64_t * e = v + (size_t) (i - v_i0) * K;
+#pragma unroll
+        for (int k = 0; k < K; k++) acc[k] ^= e[k];
+    }
+    uint64_t * d = dst + (size_t) (j - j0) * K;
+#pragma unroll
+    for (int k = 0; k < K; k++) d[k] = acc[k];
+}
+
+int gpu_x_dotprod_impl(void * dst, uint32_t const * xv,
+                       unsigned int j0, unsigned int j1, unsigned int nx,
+                       void const * v_host, size_t v_bytes,
+                       unsigned int v_i0, unsigned int vi0, unsigned int vi1, int K)
+{
+    if (j1 <= j0 || (K != 1 && K != 2 && K != 4)) return 0;
+    GDV & g = g_dv(v_host, v_bytes);
+    if (!g.d || !g.current) return 0;        /* need a device-resident v */
+    uint32_t * xvd = g_xv_dev(xv, (size_t) j1 * nx);
+    if (!xvd) return 0;
+    unsigned int m = j1 - j0;
+
+    /* per-thread device scratch for the (small) result, grown as needed */
+    static thread_local uint64_t * scratch = nullptr;
+    static thread_local size_t scratch_n = 0;
+    if (scratch_n < (size_t) m * K) {
+        if (scratch) cudaFree(scratch);
+        if (cudaMalloc(&scratch, (size_t) m * K * sizeof(uint64_t)) != cudaSuccess) { scratch = nullptr; scratch_n = 0; return 0; }
+        scratch_n = (size_t) m * K;
+    }
+
+    int tpb = 64; int blk = (int) ((m + tpb - 1) / tpb);
+    switch (K) {
+        case 1: xdot_kernel<1><<<blk, tpb>>>(scratch, xvd, j0, j1, nx, g.d, v_i0, vi0, vi1); break;
+        case 2: xdot_kernel<2><<<blk, tpb>>>(scratch, xvd, j0, j1, nx, g.d, v_i0, vi0, vi1); break;
+        case 4: xdot_kernel<4><<<blk, tpb>>>(scratch, xvd, j0, j1, nx, g.d, v_i0, vi0, vi1); break;
+    }
+    CUCHECK(cudaGetLastError());
+    /* XOR the (small) device result into the host dst, matching add_and_reduce. */
+    std::vector<uint64_t> tmp((size_t) m * K);
+    CUCHECK(cudaMemcpy(tmp.data(), scratch, (size_t) m * K * sizeof(uint64_t), cudaMemcpyDeviceToHost));
+    uint64_t * hd = (uint64_t *) dst;
+    for (size_t x = 0; x < (size_t) m * K; x++) hd[x] ^= tmp[x];
+    return 1;
+}
+
 /* install the hooks exactly once */
 void gpu_install_hooks() {
     static bool done = false;
@@ -339,6 +414,10 @@ void gpu_install_hooks() {
     cado_gpu_dev_sync = gpu_dev_sync_impl;
     cado_gpu_dev_ensure = gpu_dev_ensure_impl;
     cado_gpu_dev_mark_resident = gpu_dev_mark_resident_impl;
+    cado_gpu_x_dotprod = gpu_x_dotprod_impl;
+    /* residency is genuinely active only with both flags set */
+    cado_gpu_residency_available =
+        (getenv("CADO_GPU_VECRESIDENT") && getenv("CADO_GPU_DEVCOMM")) ? 1 : 0;
     done = true;
 }
 } // namespace

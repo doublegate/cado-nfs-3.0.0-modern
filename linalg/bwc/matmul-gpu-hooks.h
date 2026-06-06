@@ -15,6 +15,7 @@
  * single-node case (no MPI); see matmul_top_comm.cpp. */
 
 #include <cstddef>
+#include <cstdint>
 
 /* Single-node GF(2) allreduce on device: given the host pointers of the T
  * sibling vectors (each `bytes` long), reduce them with XOR and broadcast the
@@ -80,9 +81,30 @@ extern int (*cado_gpu_dev_ensure)(void const * host, size_t buf_bytes);
  * the safe host-authoritative path. Requires CADO_GPU_VECRESIDENT + CADO_GPU_DEVCOMM. */
 extern int cado_gpu_residency_active;
 
+/* Set by the GPU backend at init: nonzero iff full vector residency is actually
+ * enabled for this run (CADO_GPU_VECRESIDENT + CADO_GPU_DEVCOMM, with a GPU matmul
+ * backend loaded). The krylov loop sets cado_gpu_residency_active from this, so the
+ * residency code paths (skip-invalidate, GPU x_dotprod) only engage when residency
+ * is genuinely on — never in the default or DEVCOMM-only-without-residency runs. */
+extern int cado_gpu_residency_available;
+
 /* Mark the device buffer for `host` as the authoritative copy (current, and the
  * host copy stale) without any transfer — used by the device comm to leave its
  * result device-resident in residency mode. Returns 1 on success, 0 otherwise. */
 extern int (*cado_gpu_dev_mark_resident)(void const * host, size_t buf_bytes);
+
+/* GPU x_dotprod (Track 2.2): the BW-sequence gather of the krylov inner loop, on
+ * the device-resident vector — so a resident vector need not return to the host
+ * for it (the lone surviving per-iteration D2H). For each output row j in [j0,j1)
+ * it XORs (GF(2)) the K-limb element v[i - v_i0] for the nx sparse positions
+ * i = xv[j*nx+t] that fall in the local range [vi0,vi1), and XORs the K-limb
+ * result into dst[(j-j0)*K..]. v_host is the registry key (must be device-current);
+ * K = elt_stride/8. Returns 1 if it handled it on device (no host read of v), 0 to
+ * fall back to the host path. GF(2) only (prime==2). */
+extern int (*cado_gpu_x_dotprod)(void * dst, uint32_t const * xv,
+                                 unsigned int j0, unsigned int j1, unsigned int nx,
+                                 void const * v_host, size_t v_bytes,
+                                 unsigned int v_i0, unsigned int vi0, unsigned int vi1,
+                                 int K);
 
 #endif /* CADO_MATMUL_GPU_HOOKS_H */

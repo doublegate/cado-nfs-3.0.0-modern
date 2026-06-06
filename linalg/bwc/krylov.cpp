@@ -299,10 +299,11 @@ static void * krylov_prog(parallelizing_info_ptr pi, cxx_param_list & pl, void *
          * resident across the steady iteration so mul()+comm skip their H2D/D2H.
          * Scoped to this inner loop only — prep/secure/twist stay host-authoritative.
          * The one per-iteration host read (x_dotprod) is materialised first. */
-        cado_gpu_residency_active = 1;
+        cado_gpu_residency_active = cado_gpu_residency_available;
         for(int i = 0 ; i < bw->interval ; i++) {
-            /* Compute the product by x */
-            if (cado_gpu_sync_to_host) cado_gpu_sync_to_host(ymy[0].v);
+            /* Compute the product by x. x_dotprod is residency-aware: it gathers
+             * directly off the device-resident ymy[0] (or syncs + uses the host
+             * path), so no whole-vector D2H is needed here. */
             x_dotprod(A->vec_subvec(xymats, i * bw->m),
                     gxvecs, 0, bw->m, nx, ymy[0], 1);
 
