@@ -10,11 +10,16 @@ rebased onto upstream **3.0.0**; only the changes introduced by this fork are
 listed. For the upstream history see [`NEWS`](NEWS). The earlier `2.3.1-modern`
 release (rebased on upstream 2.3.0) lives on the `main` branch.
 
-## [Unreleased] — 3.1.0-modern
+## [3.1.0-modern] — 2026-06-06
 
 From 3.1.0-modern the fork carries its own minor line (still upstream 3.0.0's NFS
 algorithms; the bump reflects substantial original work beyond a pure mirror).
-Work in progress — see the v3.1.0 roadmap. Landed so far:
+This release adds GPU linear algebra (SpMV + full vector residency), a GPU
+pre-NFS ECM front-end, AVX-512 VPCLMULQDQ/IFMA kernels (SDE-validated), and a
+batch of orchestration/UX features. Every change is gated by a verified
+`product == N` factorization or a bit-exact validation; hardware-blocked items
+(multi-GPU/multi-node, DLP/product-tree) are documented as designs rather than
+shipped as unvalidated code.
 
 ### GPU (Track 2.2) — linear-algebra SpMV (foundation)
 

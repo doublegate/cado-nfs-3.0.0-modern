@@ -106,7 +106,9 @@ Optimized for numbers > 85 digits; < 60 digits is unsupported. Strip small prime
 
 - `docs/number-field-sieve.md` — in-depth NFS mathematics explainer.
 - `docs/number-field-sieve-plain-english.md` — the same in layman's terms.
-- `docs/gpu-cofactorization.md` — GPU ECM cofactorization: measured results + honest Amdahl analysis.
+- `docs/gpu-cofactorization.md` — GPU ECM cofactorization: measured results + honest Amdahl analysis (+ 3.1.0 cofactor scale-out / product-tree designs).
+- `docs/gpu-prefactor.md` — (3.1.0) GPU pre-NFS ECM factoring front-end: why it sidesteps Amdahl, the multi-precision Montgomery ECM, measured CPU-vs-GPU.
+- `docs/gpu-linalg.md` — (3.1.0) GPU BWC SpMV backend + full vector residency: kernel, transfer analysis, at-scale sweep, multi-GPU partition + multi-node residency design.
 - `docs/rust-orchestration.md` — the Phase-4 Rust client/server, the protocol, and the in-process swap.
 - `BENCHMARKS.md` — performance sweep + methodology.
 - Upstream: `@README` (build/run/distributed), `@README.dlp` (discrete log), `@README.Python` (orchestration internals).
