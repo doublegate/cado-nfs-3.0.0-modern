@@ -220,7 +220,13 @@ endif()
 macro(mark_targets_as_mpi)
     if(WITH_MPI)
         foreach(t ${ARGN})
-            set_property(TARGET ${t} APPEND PROPERTY COMPILE_OPTIONS --mpi)
+            # --mpi is a marker for cado's C/C++ compiler wrapper; CUDA sources
+            # are compiled by nvcc -> host g++ directly, which rejects it. Apply
+            # it only to non-CUDA compilation (a GPU matmul backend lib can be an
+            # MPI target — its .cu must not see --mpi). The link marker is fine:
+            # static libs ignore LINK_OPTIONS, and executables link via the wrapper.
+            set_property(TARGET ${t} APPEND PROPERTY COMPILE_OPTIONS
+                $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:--mpi>)
             set_property(TARGET ${t} APPEND PROPERTY LINK_OPTIONS --mpi)
         endforeach()
     endif()

@@ -420,6 +420,29 @@ void gpu_install_hooks() {
         (getenv("CADO_GPU_VECRESIDENT") && getenv("CADO_GPU_DEVCOMM")) ? 1 : 0;
     done = true;
 }
+
+/* Multi-GPU: the standard HPC model is one MPI rank per GPU. Bind this process to
+ * a GPU chosen by its node-local MPI rank (round-robin over the visible devices);
+ * CADO_GPU_DEVICE overrides explicitly. cudaSetDevice is per host thread, so each
+ * BWC thread calls this (they share one rank, hence one device). A no-op with a
+ * single visible GPU. Composes with MPI: each rank's vectors/SpMV live on its own
+ * GPU and the (host) comm carries data between ranks. */
+void gpu_select_device() {
+    int ndev = 0;
+    if (cudaGetDeviceCount(&ndev) != cudaSuccess || ndev <= 0) return;
+    int dev = 0;
+    const char * ov = getenv("CADO_GPU_DEVICE");
+    if (ov) {
+        dev = atoi(ov) % ndev;
+    } else if (ndev > 1) {
+        const char * e = getenv("OMPI_COMM_WORLD_LOCAL_RANK");
+        if (!e) e = getenv("MV2_COMM_WORLD_LOCAL_RANK");
+        if (!e) e = getenv("SLURM_LOCALID");
+        if (!e) e = getenv("PMI_LOCAL_RANK");
+        if (e) dev = atoi(e) % ndev;
+    }
+    cudaSetDevice(dev);
+}
 } // namespace
 
 template<typename Arith>
@@ -458,6 +481,7 @@ struct matmul_gpu : public matmul_interface {
         int const suggest = optimized_direction ^ MM_DIR0_PREFERS_TRANSP_MULT;
         store_transposed = suggest;
         param_list_parse(pl, "mm_store_transposed", store_transposed);
+        gpu_select_device();    /* bind this thread/rank to its GPU (multi-GPU) */
         gpu_install_hooks();    /* make comm-on-device reachable from bwc_base */
     }
     matmul_gpu(matmul_gpu const &) = delete;
