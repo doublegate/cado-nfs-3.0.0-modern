@@ -27,6 +27,24 @@ validated-at-degenerate-path code + design.
 - **Version bumped to `3.2.0-modern`** (`CMakeLists.txt` `CADO_VERSION_MINOR
   1 → 2`); roadmap added.
 
+### GPU (C1) — adaptive SpMV kernel (sub-warp CSR-vector)
+
+- **Faster GPU SpMV in the cache-resident regime.** The 3.1.0 warp-per-row kernel
+  uses a full 32-lane warp per output row, but BWC rows have only ~30 nonzeros, so
+  each lane does ~1 gather then a 5-step warp-reduce — reduce-bound. A new sub-warp
+  **CSR-vector** kernel (`spmv_vec<K,VEC>`, VEC=16) puts two rows per warp, halving
+  the reduce and raising occupancy. `launch_spmv` now **dispatches adaptively**:
+  vec16 when the source vector is L2-resident (`nrows·K·8 ≤ 12 MB`), else the
+  latency-hiding warp32 kernel (override with `CADO_GPU_SPMV={vec,warp}`).
+- **Measured (RTX 3090, `bench/gpu-spmv-bench.cu`, bit-exact at every size):** in
+  the cache-resident regime vec16 is **1.26–1.8× warp** (e.g. 49.5 vs 39.4 Gnz/s
+  at 0.8 M rows; up to ~27 vs ~15 at 1 M); at large N (≥ ~2 M rows / wider blocks)
+  it is a wash or worse, so the adaptive dispatch keeps warp32 there — **no
+  regression**. End-to-end `product == N` on the c59 with both the adaptive (→vec)
+  default and a forced `CADO_GPU_SPMV=warp` run. The large-N lever (column
+  reordering on real filtered matrices) is the documented next C1 step
+  (`docs/gpu-linalg.md`); the synthetic random-CSR bench cannot show it.
+
 Post-`3.1.0-modern` housekeeping carried in this cycle (no code/behaviour change):
 
 - **Project renamed to `cado-nfs-modern`.** Both the local checkout and the

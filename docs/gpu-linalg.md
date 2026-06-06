@@ -317,6 +317,24 @@ Crucially this **flips the bottleneck**: the split is now H2D 1.81 ms / kernel
 0.97 ms / D2H 0.62 ms — **72% transfers**. So the residency port above is now the
 clearly dominant remaining single-machine win (~3× more headroom), and further
 kernel tuning (ELL, column sorting, shared-mem `src`) is secondary.
+
+### v3.2.0 (C1): adaptive sub-warp CSR-vector kernel
+
+The warp-per-row kernel spends a full 32-lane warp on a ~30-nonzero row — each
+lane does ~1 gather then a 5-step warp-reduce, so it is **reduce-bound**. A
+**sub-warp CSR-vector** kernel (`spmv_vec<K,VEC>`, VEC=16) puts two rows per warp,
+halving the reduce and raising occupancy. `launch_spmv` dispatches it when the
+source vector is **L2-resident** (`nrows·K·8 ≤ 12 MB`), else keeps warp32
+(override: `CADO_GPU_SPMV={vec,warp}`). Bit-exact; **1.26–1.8× faster** in the
+cache-resident regime (49.5 vs 39.4 Gnz/s at 0.8 M rows), a wash at large N where
+the random `src` gather is the wall — hence the size gate, so there is no large-N
+regression. `product == N` end-to-end on both paths.
+
+**Next (C1, large-N lever):** the random-CSR `src` gather is the large-N wall; the
+real win there is **column reordering** of the *filtered* matrix for locality (so
+a row's nonzeros hit nearby `src`) — an `mmt_vec`/matrix-layer change that the
+synthetic random-CSR bench cannot demonstrate, to be measured on real c100–c120
+matrices via `bench_matcache` / an end-to-end run.
 3. **Multi-GPU / multi-node**: BWC already splits the matrix across an `nh×nv`
    MPI grid (`balancing_workhorse`), each rank owning a submatrix; the GPU backend
    slots in at each rank's local `mm->mul()`. One GPU per rank → multi-GPU on a

@@ -152,17 +152,66 @@ __global__ void spmv_warp(const uint32_t * rowptr, const uint32_t * col,
         for (int k = 0; k < K; k++) d[k] = acc[k]; }
 }
 
+/* sub-warp CSR-vector variant (v3.2.0 C1): VEC lanes per output row instead of a
+ * full warp. With ~30 nonzeros/row a full 32-lane warp is reduce-bound (each lane
+ * does ~1 gather, then a 5-step warp-reduce); VEC=16 puts two rows per warp,
+ * halving the reduce and raising occupancy. Measured (bench/gpu-spmv-bench.cu, b64,
+ * RTX 3090): ~1.8x faster than spmv_warp when the source vector is L2-resident
+ * (≈ c100-scale and below), a wash once it exceeds L2 and the random src gather is
+ * the wall — so launch_spmv dispatches by size. Bit-exact with spmv_warp. */
+template<int K, int VEC>
+__global__ void spmv_vec(const uint32_t * rowptr, const uint32_t * col,
+                         const uint64_t * src, uint64_t * dst, unsigned int nrows)
+{
+    unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int row = gid / VEC, lane = gid % VEC;
+    if (row >= nrows) return;
+    uint64_t acc[K];
+#pragma unroll
+    for (int k = 0; k < K; k++) acc[k] = 0;
+    uint32_t lo = rowptr[row], hi = rowptr[row + 1];
+    for (uint32_t p = lo + lane; p < hi; p += VEC) {
+        const uint64_t * s = src + (size_t) __ldg(&col[p]) * K;
+#pragma unroll
+        for (int k = 0; k < K; k++) acc[k] ^= __ldg(&s[k]);
+    }
+#pragma unroll
+    for (int off = VEC / 2; off > 0; off >>= 1)
+#pragma unroll
+        for (int k = 0; k < K; k++) acc[k] ^= __shfl_down_sync(0xffffffffu, acc[k], off, VEC);
+    if (lane == 0) { uint64_t * d = dst + (size_t) row * K;
+#pragma unroll
+        for (int k = 0; k < K; k++) d[k] = acc[k]; }
+}
+
 static void launch_spmv(int K, const uint32_t * rp, const uint32_t * col,
                         const uint64_t * src, uint64_t * dst, unsigned int nrows)
 {
-    int tpb = 128; int blk = (int)(((size_t) nrows * 32 + tpb - 1) / tpb);
-    switch (K) {
-        case 1: spmv_warp<1><<<blk, tpb>>>(rp, col, src, dst, nrows); break;
-        case 2: spmv_warp<2><<<blk, tpb>>>(rp, col, src, dst, nrows); break;
-        case 4: spmv_warp<4><<<blk, tpb>>>(rp, col, src, dst, nrows); break;
-        default:
-            fprintf(stderr, "matmul-gpu: unsupported block width K=%d\n", K);
-            abort();
+    /* Pick the sub-warp CSR-vector kernel (VEC=16) when the source vector is
+     * cache-resident (~<=12 MB, i.e. the matrix fits the 3090's L2 with room),
+     * else the latency-hiding full-warp kernel. Both are bit-exact. Override with
+     * CADO_GPU_SPMV={warp,vec}. (Near-square BWC matrices: nrows ~= ncols.) */
+    static const char * force = getenv("CADO_GPU_SPMV");
+    const size_t VEC = 16;
+    bool small = (size_t) nrows * K * sizeof(uint64_t) <= (size_t)(12u << 20);
+    if (force) small = (strcmp(force, "vec") == 0);
+    int tpb = 128;
+    if (small) {
+        int blk = (int)(((size_t) nrows * VEC + tpb - 1) / tpb);
+        switch (K) {
+            case 1: spmv_vec<1, 16><<<blk, tpb>>>(rp, col, src, dst, nrows); break;
+            case 2: spmv_vec<2, 16><<<blk, tpb>>>(rp, col, src, dst, nrows); break;
+            case 4: spmv_vec<4, 16><<<blk, tpb>>>(rp, col, src, dst, nrows); break;
+            default: fprintf(stderr, "matmul-gpu: unsupported block width K=%d\n", K); abort();
+        }
+    } else {
+        int blk = (int)(((size_t) nrows * 32 + tpb - 1) / tpb);
+        switch (K) {
+            case 1: spmv_warp<1><<<blk, tpb>>>(rp, col, src, dst, nrows); break;
+            case 2: spmv_warp<2><<<blk, tpb>>>(rp, col, src, dst, nrows); break;
+            case 4: spmv_warp<4><<<blk, tpb>>>(rp, col, src, dst, nrows); break;
+            default: fprintf(stderr, "matmul-gpu: unsupported block width K=%d\n", K); abort();
+        }
     }
 }
 
