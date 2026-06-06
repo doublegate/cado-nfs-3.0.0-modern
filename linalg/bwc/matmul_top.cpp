@@ -784,6 +784,14 @@ void matmul_top_mul_comm(mmt_vec & v, mmt_vec & w)
      * undesired !
      */
     ASSERT_ALWAYS(w.consistency != 2);
+
+    /* Track 2.2: run the whole reduce+broadcast on the device-resident buffers
+     * when a GPU backend is loaded and CADO_GPU_DEVCOMM is set (single-node only;
+     * mirrors the host algorithm bit-for-bit). Falls through to the host path
+     * otherwise. */
+    if (matmul_top_mul_comm_gpu(v, w))
+        return;
+
     pi_log_op(v.pi->m, "[%s:%d] enter mmt_vec_reduce", __func__, __LINE__);
     mmt_vec_reduce(v, w);
     ASSERT_ALWAYS(v.consistency == 1);

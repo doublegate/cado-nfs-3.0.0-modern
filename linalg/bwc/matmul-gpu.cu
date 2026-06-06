@@ -71,6 +71,15 @@ GDV & g_dv(const void * host, size_t bytes) {
     return x;
 }
 void g_pin(const void * p, size_t bytes) {
+    /* In comm-on-device mode, host buffers are copied at different (larger) sizes
+     * by the comm than by mul(); cudaHostRegister enforces the registered region
+     * size and conflicts on overlap/aliasing, which corrupts the CUDA context.
+     * Pinning is a transfer-speed optimisation that residency makes moot anyway,
+     * so we simply don't pin when device comm is active (copies fall back to
+     * pageable — correct, and the transfers are what residency removes). The
+     * default (non-DEVCOMM) path keeps pinning and its measured speedup. */
+    static const bool devcomm = getenv("CADO_GPU_DEVCOMM") != nullptr;
+    if (devcomm) return;
     std::lock_guard<std::mutex> lk(g_mtx);
     auto it = g_pinned.find(p);
     if (it != g_pinned.end()) { if (bytes <= it->second) return;
@@ -209,9 +218,8 @@ int gpu_comm_reduce_bcast_impl(void * const * host_ptrs,
      * do NOT trust the device copy afterwards (current=false) — outside the
      * krylov main loop (prep/secure/twist) the host buffer can be overwritten
      * without an invalidation, so a later skip-H2D must not reuse this device
-     * data. This makes A2a a pure correctness check of the device reduce in the
-     * real pipeline. The residency win (A2b) keeps current=true + host_dirty and
-     * relies on full host-read sync coverage. */
+     * data. The residency win (A2b) keeps current=true + host_dirty and relies on
+     * full host-read sync coverage. */
     for (unsigned int k = 0; k < T; k++) {
         GDV & g = g_dv(host_ptrs[k], bytes);
         CUCHECK(cudaMemcpy(host_ptrs[k], g.d, bytes, cudaMemcpyDeviceToHost));
@@ -232,6 +240,82 @@ int gpu_sync_to_host_impl(void const * host_ptr)
     return 1;
 }
 
+/* ---- low-level device-buffer ops for the 2D comm port (reduce+broadcast) ----
+ * Each mirrors one host vec operation on the device-resident buffers at identical
+ * byte offsets, so the comm result is bit-for-bit the host comm's. */
+
+/* dst[off..+len) = XOR over k<nsrc of src_k[off..+len), in 64-bit words. */
+__global__ void xor_block_kernel(PtrPack src, uint64_t * dst,
+                                 size_t off_words, size_t words) {
+    size_t g = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (g >= words) return;
+    uint64_t acc = 0;
+    for (unsigned int k = 0; k < src.T; k++) acc ^= src.p[k][off_words + g];
+    dst[off_words + g] = acc;
+}
+
+int gpu_dev_xor_block_impl(void * dst_host, void * const * src_hosts,
+                           unsigned int nsrc, size_t off_bytes,
+                           size_t len_bytes, size_t buf_bytes)
+{
+    if (nsrc == 0 || nsrc > GPU_COMM_MAX_SIB) return 0;
+    GDV & gd = g_dv(dst_host, buf_bytes);
+    if (!gd.d) return 0;
+    PtrPack src; src.T = nsrc;
+    for (unsigned int k = 0; k < nsrc; k++) {
+        GDV & gs = g_dv(src_hosts[k], buf_bytes);
+        if (!gs.d) return 0;
+        src.p[k] = gs.d;
+    }
+    size_t words = len_bytes / sizeof(uint64_t);
+    size_t off_words = off_bytes / sizeof(uint64_t);
+    int tpb = 256; size_t blk = (words + tpb - 1) / tpb;
+    xor_block_kernel<<<blk, tpb>>>(src, gd.d, off_words, words);
+    CUCHECK(cudaGetLastError());
+    return 1;
+}
+
+int gpu_dev_copy_block_impl(void * dst_host, size_t dst_off_bytes,
+                            void const * src_host, size_t src_off_bytes,
+                            size_t len_bytes, size_t dst_buf_bytes,
+                            size_t src_buf_bytes)
+{
+    GDV & gd = g_dv(dst_host, dst_buf_bytes);
+    GDV & gs = g_dv(src_host, src_buf_bytes);
+    if (!gd.d || !gs.d) return 0;
+    CUCHECK(cudaMemcpy((char *) gd.d + dst_off_bytes,
+                       (const char *) gs.d + src_off_bytes,
+                       len_bytes, cudaMemcpyDeviceToDevice));
+    return 1;
+}
+
+int gpu_dev_upload_impl(void const * host, size_t buf_bytes)
+{
+    GDV & g = g_dv(host, buf_bytes);
+    if (!g.d) return 0;
+    CUCHECK(cudaMemcpy(g.d, host, buf_bytes, cudaMemcpyHostToDevice));
+    g.current = true; g.host_dirty = false;
+    return 1;
+}
+
+int gpu_dev_download_impl(void * host, size_t buf_bytes)
+{
+    GDV & g = g_dv(host, buf_bytes);
+    if (!g.d) return 0;
+    CUCHECK(cudaDeviceSynchronize());
+    CUCHECK(cudaMemcpy(host, g.d, buf_bytes, cudaMemcpyDeviceToHost));
+    g.current = false; g.host_dirty = false;
+    return 1;
+}
+
+int gpu_dev_sync_impl(void) { CUCHECK(cudaDeviceSynchronize()); return 1; }
+
+int gpu_dev_ensure_impl(void const * host, size_t buf_bytes)
+{
+    GDV & g = g_dv(host, buf_bytes);   /* allocates/grows under g_mtx, no data op */
+    return g.d != nullptr;
+}
+
 /* install the hooks exactly once */
 void gpu_install_hooks() {
     static bool done = false;
@@ -239,6 +323,12 @@ void gpu_install_hooks() {
     if (done) return;
     cado_gpu_comm_reduce_bcast = gpu_comm_reduce_bcast_impl;
     cado_gpu_sync_to_host = gpu_sync_to_host_impl;
+    cado_gpu_dev_xor_block = gpu_dev_xor_block_impl;
+    cado_gpu_dev_copy_block = gpu_dev_copy_block_impl;
+    cado_gpu_dev_upload = gpu_dev_upload_impl;
+    cado_gpu_dev_download = gpu_dev_download_impl;
+    cado_gpu_dev_sync = gpu_dev_sync_impl;
+    cado_gpu_dev_ensure = gpu_dev_ensure_impl;
     done = true;
 }
 } // namespace

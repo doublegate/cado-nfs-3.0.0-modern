@@ -22,6 +22,12 @@
  * loaded and installs them in its constructor; null => ordinary host comm. */
 int (*cado_gpu_comm_reduce_bcast)(void * const *, unsigned int, size_t) = nullptr;
 int (*cado_gpu_sync_to_host)(void const *) = nullptr;
+int (*cado_gpu_dev_xor_block)(void *, void * const *, unsigned int, size_t, size_t, size_t) = nullptr;
+int (*cado_gpu_dev_copy_block)(void *, size_t, void const *, size_t, size_t, size_t, size_t) = nullptr;
+int (*cado_gpu_dev_upload)(void const *, size_t) = nullptr;
+int (*cado_gpu_dev_download)(void *, size_t) = nullptr;
+int (*cado_gpu_dev_sync)(void) = nullptr;
+int (*cado_gpu_dev_ensure)(void const *, size_t) = nullptr;
 
 /* Our innermost communication routines are essentially all-gather and
  * reduce-scatter, following the MPI terminology. We provide several
@@ -820,6 +826,123 @@ mmt_vec_allreduce(mmt_vec & v)
         }
     }
     v.consistency = 2;
+}
+/* }}} */
+
+/* {{{ matmul_top_mul_comm_gpu — the 2D comm (reduce+broadcast) on the device.
+ *
+ * Mirrors, op-for-op at identical byte offsets, the host algorithm of
+ * mmt_vec_reduce(v,w) + mmt_vec_broadcast(v) for the single-node (njobs==1)
+ * case, but on the device-resident buffers. By construction the result is
+ * bit-for-bit the host comm's (it is the same XORs and copies, just on device).
+ *
+ * Reproduced net effect for grid thread (trank_w in w.d, trank_v in v.d):
+ *   R_b      = XOR over w.d siblings of w.v             (reduce_inner)
+ *   v.own    = R_b[ trank_w*eblock ]                    (mmt_vec_reduce repack)
+ *   sib0.own = v.own ; v.full = sib0.full               (mmt_vec_broadcast)
+ * which is the shuffled-product transpose between the w and v layouts.
+ *
+ * NO-TRUST for now: uploads w from host, computes on device, writes v back to
+ * host, and leaves the device copies non-authoritative (current=false) — a
+ * correctness checkpoint of the device transpose in the real pipeline. The
+ * residency win (skipping the host upload/writeback) is a follow-up that flips
+ * this to device-authoritative once product==N is confirmed. */
+int matmul_top_mul_comm_gpu(mmt_vec & v, mmt_vec & w)
+{
+    static const bool devcomm = getenv("CADO_GPU_DEVCOMM") != nullptr;
+    if (!devcomm || cado_gpu_dev_xor_block == nullptr
+            || cado_gpu_dev_copy_block == nullptr) return 0;
+
+    pi_comm_ptr wr_w = w.pi->wr[w.d];
+    pi_comm_ptr wr_v = v.pi->wr[v.d];
+    if (wr_w->njobs != 1 || wr_v->njobs != 1) return 0;     /* single node only */
+    if (mmt_vec_is_shared(w)) return 0;                     /* w is never shared */
+    if (w.consistency == 2) return 0;        /* reduce undesired on consistent input */
+    /* v may be a THREAD_SHARED source vector (the common krylov case): then all
+     * threads of the v.d communicator point v.v at one buffer and the broadcast
+     * is a no-op (the reduce's vec_set already assembles the shared buffer). */
+    bool const v_shared = mmt_vec_is_shared(v);
+
+    size_t const elt    = v.abase->vec_elt_stride(1);          /* bytes per item */
+    size_t const eblock = mmt_my_own_size_in_items(v);
+    ASSERT_ALWAYS(eblock == mmt_my_own_size_in_items(w));
+    size_t const eb_b = eblock * elt;
+    size_t const wbuf = (size_t) (w.i1 - w.i0) * elt;
+    size_t const vbuf = (size_t) (v.i1 - v.i0) * elt;
+    unsigned int const ncores_w = wr_w->ncores;
+    unsigned int const trank_w  = wr_w->trank;
+    unsigned int const trank_v  = wr_v->trank;
+    size_t const own_v_b = mmt_my_own_offset_in_items(v) * elt;
+
+    auto phase_barrier = [&]() {
+        serialize_threads(v.pi->m);     /* all threads have issued their device op */
+        cado_gpu_dev_sync();            /* device drains all issued ops */
+        serialize_threads(v.pi->m);     /* all threads past the sync */
+    };
+
+    /* Phase 0: upload this thread's w buffer (host is authoritative post-mul) and
+     * pre-size the v.v output buffer. The latter is critical: v.v was sized by
+     * mul() at dim[d]*K*8, which for a rectangular grid differs from vbuf, so
+     * without this a concurrent copy in phase 2 could race a sibling thread's
+     * buffer grow (cudaFree+cudaMalloc) on the shared v.v -> use-after-free. We
+     * size it here, barriered, so no grow happens during the data phases. For a
+     * shared v.v only one thread (trank_v==0) sizes it (no concurrent grow). */
+    if (!cado_gpu_dev_upload(w.v, wbuf)) return 0;
+    if (!v_shared || trank_v == 0) {
+        if (cado_gpu_dev_ensure && !cado_gpu_dev_ensure(v.v, vbuf)) return 0;
+    }
+    phase_barrier();
+
+    /* Phase 1: reduce_inner — w.sibling(0).v[trank_w*eblock] = XOR_k w.sibling(k).v[same]. */
+    if (ncores_w > 1) {
+        std::vector<void *> srcs(ncores_w);
+        for (unsigned int k = 0; k < ncores_w; k++) srcs[k] = w.sibling(k).v;
+        if (!cado_gpu_dev_xor_block(w.sibling(0).v, srcs.data(), ncores_w,
+                                    trank_w * eb_b, eb_b, wbuf))
+            return 0;
+    }
+    phase_barrier();
+
+    /* Phase 2: mmt_vec_reduce repack — v.v[own] = w.sibling(0).v[trank_w*eblock]. */
+    if (!cado_gpu_dev_copy_block(v.v, own_v_b, w.sibling(0).v, trank_w * eb_b,
+                                 eb_b, vbuf, wbuf))
+        return 0;
+    v.consistency = 1;
+    phase_barrier();
+
+    /* Phases 3-4 (mmt_vec_broadcast) only run for a non-shared v. For a shared v
+     * the reduce above already wrote the (single, shared) buffer at every
+     * thread's own offset, so the broadcast is a no-op. */
+    if (!v_shared) {
+        /* Phase 3: own_vec_set2 — v.sibling(0).v[own] = v.v[own] (skipped by the
+         * &v==&w guard for trank_v==0, where v IS its own sibling0). */
+        if (trank_v != 0) {
+            if (!cado_gpu_dev_copy_block(v.sibling(0).v, own_v_b, v.v, own_v_b,
+                                         eb_b, vbuf, vbuf))
+                return 0;
+        }
+        phase_barrier();
+
+        /* Phase 4: full_vec_set — v.v = v.sibling(0).v (full) (skipped for
+         * trank_v==0, where v.v already is sibling0). */
+        if (trank_v != 0) {
+            if (!cado_gpu_dev_copy_block(v.v, 0, v.sibling(0).v, 0, vbuf, vbuf, vbuf))
+                return 0;
+        }
+        phase_barrier();
+    }
+    v.consistency = 2;
+
+    /* Phase 5: write the result back to host (no-trust; device non-authoritative).
+     * For a shared v the buffer is common to the v.d communicator, so a single
+     * thread (trank_v==0) downloads it; otherwise every thread downloads its own. */
+    if (!v_shared) {
+        if (!cado_gpu_dev_download(v.v, vbuf)) return 0;
+    } else {
+        if (trank_v == 0 && !cado_gpu_dev_download(v.v, vbuf)) return 0;
+    }
+    serialize_threads(v.pi->m);
+    return 1;
 }
 /* }}} */
 

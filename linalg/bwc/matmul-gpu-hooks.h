@@ -32,4 +32,42 @@ extern int (*cado_gpu_comm_reduce_bcast)(void * const * host_ptrs,
  * read. Returns 1 if a copy happened, 0 otherwise. */
 extern int (*cado_gpu_sync_to_host)(void const * host_ptr);
 
+/* ---- low-level device-buffer ops for the 2D comm port (reduce+broadcast) ----
+ * These mirror, on the device-resident copies, the exact host operations of
+ * mmt_vec_reduce + mmt_vec_broadcast at identical offsets, so the result is
+ * bit-for-bit the host comm's. All sizes/offsets are in BYTES; buf_bytes is the
+ * full buffer length of the host pointer (its registry key). All return 1 on
+ * success, 0 to force a host fallback. The device kernels run on the default
+ * stream; callers serialize across threads (serialize_threads) and must call
+ * cado_gpu_dev_sync once per phase so cross-thread reads see completed writes. */
+
+/* dst_buf[off .. off+len) = XOR over k<nsrc of src_bufs[k][off .. off+len).
+ * (mirrors mmt_vec_reduce_inner's per-thread vec_add_and_reduce; src list
+ * includes the accumulator dst as src_bufs[0].) */
+extern int (*cado_gpu_dev_xor_block)(void * dst_host, void * const * src_hosts,
+                                     unsigned int nsrc, size_t off_bytes,
+                                     size_t len_bytes, size_t buf_bytes);
+
+/* dst_buf[dst_off .. +len) = src_buf[src_off .. +len)  (device-to-device). */
+extern int (*cado_gpu_dev_copy_block)(void * dst_host, size_t dst_off_bytes,
+                                      void const * src_host, size_t src_off_bytes,
+                                      size_t len_bytes,
+                                      size_t dst_buf_bytes, size_t src_buf_bytes);
+
+/* H2D the whole host buffer into its device copy (mark device current). */
+extern int (*cado_gpu_dev_upload)(void const * host, size_t buf_bytes);
+
+/* D2H the whole device copy back into the host buffer (no-trust: current=false).
+ * Implies a device sync first. */
+extern int (*cado_gpu_dev_download)(void * host, size_t buf_bytes);
+
+/* Block until all issued device work has completed (one call per comm phase). */
+extern int (*cado_gpu_dev_sync)(void);
+
+/* Ensure the device buffer for `host` exists at >= buf_bytes WITHOUT copying any
+ * data. Call this (barriered) before concurrent ops on a buffer that may need
+ * growing, so the grow (cudaFree+cudaMalloc) cannot race a sibling thread's
+ * in-flight copy into the same buffer. Returns 1 on success, 0 on alloc failure. */
+extern int (*cado_gpu_dev_ensure)(void const * host, size_t buf_bytes);
+
 #endif /* CADO_MATMUL_GPU_HOOKS_H */
