@@ -9,6 +9,12 @@ license = "LGPL-2.1-or-later"
 name = "cado-nfs-client-rs"
 path = "src/main.rs"
 
+# Optional terminal monitor (Track 3.4): polls a server's /status and renders a
+# live TUI. Reuses the crate's reqwest; ratatui/crossterm are the only extra deps.
+[[bin]]
+name = "cado-nfs-monitor-rs"
+path = "src/bin/monitor.rs"
+
 [dependencies]
 # blocking HTTP with rustls (no OpenSSL) so the result is a mostly-static binary
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart", "json"] }
@@ -21,6 +27,9 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 # direct rustls (same 0.23 reqwest's rustls-tls pulls) for --certsha1 cert pinning
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# cado-nfs-monitor-rs only
+ratatui = "0.28"
+crossterm = "0.28"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

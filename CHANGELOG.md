@@ -244,8 +244,14 @@ Work in progress — see the v3.1.0 roadmap. Landed so far:
   SSH host list (`--hosts`/`--hostfile`, `--clients-per-host`) or Slurm
   (`--slurm --ntasks`), all pointed at one `--server` with the same `--certsha1`
   pinning; `--stop` kills the clients, `--dry-run` previews. Auto-finds the client
-  binary in the build/Rust target dirs. (The optional ratatui client-monitor TUI
-  is deferred.)
+  binary in the build/Rust target dirs.
+- **`cado-nfs-monitor-rs`** — a ratatui terminal dashboard that polls a server's
+  `/status` and renders a live progress gauge, phase/state, work-unit counts, ETA,
+  and discovered factors. Understands both schemas (`cado-nfs-status/1` from the
+  Flask driver and `cado-nfs-wu-status/1` from the Rust server). `--once` prints a
+  plain-text summary and exits (scriptable / no-TTY). Validated `--once` against
+  both a live Rust work-unit server and a `cado-nfs-status/1` document
+  (c120 `[5/12] Lattice Sieving` 63.4%, wu 820/1300, ETA rendered).
 
 ### GPU (Track 2.1) — pre-NFS factoring front-end (validated)
 
