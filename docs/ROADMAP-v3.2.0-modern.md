@@ -155,11 +155,16 @@ degenerate path locally + on a multi-GPU cloud/CI runner; perf only from real HW
   bit-exact). Cross-device concurrency + throughput still need ≥2 physical GPUs (the
   streams are the mechanism). Schmidt et al. (GPU clusters beating larger CPU
   clusters on kilobit-SNFS) remain the at-scale target. See `docs/gpu-linalg.md`.
-- **D2. NVSHMEM / GPUDirect multi-node residency** (the 3.1.0 local-device-reduce
-  / MPI-boundary-exchange split design). Use NVSHMEM (GPU-initiated PGAS comm over
-  NVLink / InfiniBand-RDMA) to keep BWC vectors device-resident and exchange only
-  across the MPI boundary, overlapping comm with the SpMV — the only path to a
-  multi-node win per the 3.1.0 transfer accounting.
+- **D2. NVSHMEM / GPUDirect multi-node residency.** ✓ **DONE (design documented;
+  HW-gated).** Concrete plan to keep BWC vectors device-resident across the MPI
+  grid: the per-iteration collectives (`MPI_Allgather`/`Reduce_scatter`/`Allreduce`
+  in `matmul_top_comm.cpp`) run on host buffers today; D2 specifies L1 on-device
+  intra-node reduce (CUDA-aware MPI / NVSHMEM over NVLink), L2 GPUDirect-RDMA
+  inter-node boundary exchange, L3 overlap with the SpMV (reusing D1's per-device
+  streams), a per-collective wiring table, and the on-real-HW validation plan. No
+  unvalidated NVSHMEM code committed (needs CUDA-aware MPI + ≥2 GPUs/nodes); the
+  single-rank degenerate path is the already-validated resident loop. See
+  `docs/multinode-residency-d2.md`.
 - **D3. Cluster / HPC orchestration.** Promote `scripts/cluster-launch.sh` to a
   real distributed driver: Slurm `sbatch` job arrays, GPU-aware client placement
   (one rank per GPU), and fan-out of the *sieving* stage (the 90 %) through the
@@ -216,7 +221,7 @@ Building on 3.1.0's `--json-status`, `/status`, `/dashboard`, clap CLIs, and
 | 6 | **A3** parallel merge ✓ DONE (already upstream; verified ~3.3× @ t8) | Med | Med | cuts the high-variance filtering phase |
 | 7 | **D1** multi-GPU partition (real) ✓ DONE — per-device streams; c90 product==N at NPART=2 | High | High | **the large-N / HPC win** (concurrency needs ≥2 GPUs) |
 | 8 | **B1/B2/B3** AVX-512 sieving + gf2x + IFMA (B1 batched modinv ✓; B2 mul2/3/4 ✓; B3 plain-rep GF(p) ✓ — all SDE-validated) | Med–High | Low | AVX-512-HW-only (SDE-correct, CI-perf) |
-| 9 | **D2** NVSHMEM multi-node residency | High | High | cluster win (needs CUDA-aware MPI + multi-GPU) |
+| 9 | **D2** NVSHMEM multi-node residency ✓ DONE (design; HW-gated) | High | High | cluster win (needs CUDA-aware MPI + multi-GPU) |
 | 10 | **C3** product-tree (leaf ✓) · **C4** GPU-sieve study ✓ (measured negative) · **A4** exTNFS ✓ (feasibility documented) | High | High | research / regime-specific |
 
 **Net north star:** put the GPU + algorithm effort where the cost actually is —

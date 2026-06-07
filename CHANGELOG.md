@@ -196,6 +196,27 @@ validated-at-degenerate-path code + design.
   belongs under DLP/exTNFS (A4), not the factorization track. `docs/ROADMAP-v3.2.0-modern.md`
   updated.
 
+### GPU at scale (D2) — NVSHMEM/GPUDirect multi-node residency (HW-gated design)
+
+- **Design for keeping BWC vectors device-resident across the MPI grid.** 3.1.0
+  made vectors device-resident *within* a rank, but at multi-node scale the
+  per-iteration cross-rank collectives — `MPI_Allgather` (broadcast,
+  `matmul_top_comm.cpp:151`), `MPI_Reduce_scatter[_block]` (reduce, `:551–573`),
+  `MPI_Allreduce` (dotprods, `:804`) — run on **host** buffers, forcing a
+  device↔host round-trip every iteration. D2 documents the concrete fix:
+  (L1) intra-node on-device reduce over NVLink via CUDA-aware MPI (device-pointer
+  collectives, `MPIX_Query_cuda_support`-gated) or NVSHMEM; (L2) inter-node
+  GPUDirect-RDMA boundary exchange over InfiniBand, reduced-per-node to minimize
+  volume; (L3) overlap the boundary exchange with the SpMV (reusing D1's per-device
+  stream chunks) — the only path to a multi-node GPU-BWC win per the 3.1.0 transfer
+  accounting. A wiring table maps each collective to its device replacement.
+- **Honest scope.** HW-gated (CUDA-aware MPI + GPUDirect RDMA + ≥2 GPUs/nodes —
+  none on this box), so **no unvalidated NVSHMEM code committed**; the degenerate
+  single-rank path is already the validated `CADO_GPU_VECRESIDENT` resident loop.
+  Includes the on-real-HW validation plan (probe → device collectives → 2-rank c90
+  `product == N` → measure overlap → ship with the number). See
+  `docs/multinode-residency-d2.md`.
+
 ### GPU at scale (D1) — intra-node multi-GPU partition: per-device streams + real validation
 
 - **Finished the `CADO_GPU_NPART` partition with per-device CUDA streams (the
