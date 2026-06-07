@@ -196,6 +196,40 @@ validated-at-degenerate-path code + design.
   belongs under DLP/exTNFS (A4), not the factorization track. `docs/ROADMAP-v3.2.0-modern.md`
   updated.
 
+### Algorithm (A2) — mixed-representation ECM: CPU already done; new validated GPU win
+
+- **CPU `facul` ECM already implements A2 (honest finding).** The Bouvier–Imbert
+  2020 mixed-representation scheme (twisted-Edwards stage-1 + switch-to-Montgomery,
+  "−4 M") is already in upstream as the **"mishmash"** bytecode
+  (`sieve/ecm/bytecode_mishmash_B1_data.h`, `ec_arith_cost.h`'s
+  `EDWARDS_ADDmontgomery 4.`, `ec_arith_{Edwards,Montgomery}.h` + `bytecode.c`) —
+  the paper's authors are CADO authors. Nothing to add on the CPU path; recorded
+  like the other "already optimal" findings.
+- **GPU ECM: new twisted-Edwards `a=−1` mixed-rep stage-1, validated bit-exact,
+  measurably faster than the Montgomery ladder.** The fork's GPU ECM
+  (`bench/gpu-ecm-mp.cu`, `sieve/ecm/gpu_ecm.cu`, the `--gpu-prefactor` engine)
+  used a pure Montgomery XZ ladder (~11 modmuls/scalar-bit). Whether Edwards wins
+  *on GPU* was uncertain (extended coords = 4 field elements/point vs 2, plus a
+  per-thread wNAF table — and GPU ECM occupancy is register/limb bound), so it was
+  **measured, not assumed**.
+- **`bench/gpu-ecm-edwards.cu`** implements `a=−1` extended-coordinate `edbl`
+  (8 mm) and `eadd` (9 mm) using the exact **EFD / HWCD-2008** formulas (verified
+  against the Explicit-Formulas Database), with stage-1 by plain double-and-add
+  and by **wNAF(w=4)** (digits recoded once on the host since `s` is shared across
+  the batch → zero warp divergence, like the CPU mishmash). Correctness gate:
+  bit-exact `x([s]P)` vs the ladder through the **Montgomery↔twisted-Edwards
+  birational map** (BBJLP-2008; no square roots — pick `(u0,v0)`, derive `d`),
+  checked host and device — **PASS, 0/8192 lanes wrong at 128/256/512-bit**.
+- **Measured (RTX 3090, vs the single-scalar Montgomery ladder, B1=2000):** wNAF
+  Edwards is **~1.5–1.8× (128-bit), ~1.4–2.2× (256-bit), ~2.3–2.9× (512-bit)** —
+  the win grows with modulus width; plain double-and-add is ≈ break-even (theory:
+  ~12.5 vs 11 mm/bit). The feared extended-coordinate occupancy penalty did not
+  dominate at `w=4`. This is the **validated foundation + measured win** (same
+  staging as the C2 collision-search work); wiring it into the live
+  `gpu_ecm`/`gpu_prefactor` engines (with dedicated tripling + the final
+  Edwards→Montgomery switch for stage-2, and feeding **C3**) is the next step. See
+  `docs/gpu-ecm-mixedrep.md`.
+
 ### Orchestration/UX (E2/E3) — factor planner + per-host autotuner (DONE)
 
 - **`--plan` / `--plan-json` (E3, the "factor planner").** Given `N` and the

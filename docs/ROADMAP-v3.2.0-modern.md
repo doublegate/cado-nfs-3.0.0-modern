@@ -51,10 +51,17 @@ kernel, real multi-GPU) it started.
   goes to the genuinely high-value sieving + polyselect work (C2 collision-search
   offload, B1 AVX-512 sieving, D3 sieve fan-out).
 - **A2. Mixed-representation ECM cofactorization** (Springer 2020, "Faster
-  Cofactorization with ECM Using Mixed Representations"). Upgrade the in-sieve
-  `facul` ECM and the v3.1.0 GPU pre-factor/cofactor ECM to mixed
-  Edwards/Montgomery representations → fewer modmuls per curve. Bit-exact
-  relation-set gate; feeds C3.
+  Cofactorization with ECM Using Mixed Representations"). **PARTLY DONE / honest
+  finding.** The **CPU `facul` ECM already implements it** — upstream's
+  "mishmash" bytecode (`bytecode_mishmash_B1_data.h`, `EDWARDS_ADDmontgomery`) is
+  this exact scheme (the paper's authors are CADO authors). The fork's **GPU** ECM
+  used a pure Montgomery ladder; a validated twisted-Edwards `a=−1` mixed-rep
+  stage-1 (`bench/gpu-ecm-edwards.cu`, EFD/HWCD-2008 formulas, bit-exact vs the
+  ladder through the birational map) is **measurably faster on GPU** — wNAF ~1.5×
+  (128-bit) → ~2.9× (512-bit), the win growing with width. Foundation + measured
+  win landed; live wiring into `gpu_ecm`/`gpu_prefactor` (+ dedicated tripling and
+  the final Edwards→Montgomery switch) is the next step. Feeds C3. See
+  `docs/gpu-ecm-mixedrep.md`.
 - **A3. Parallel structured Gaussian elimination** for filtering/merge (the
   algorithm used for RSA-240/250). The 3.1.0 benchmark re-run showed **merge is
   the high-variance phase** (35–71 CPU-s at c70–c90); parallelizing it cuts that.
@@ -166,7 +173,7 @@ Building on 3.1.0's `--json-status`, `/status`, `/dashboard`, clap CLIs, and
 | 2 | **C2** GPU polyselect | Med | Low–Med | **real single-machine win** (proven in msieve) |
 | 3 | ~~**A1** 3-D lattice sieving~~ → **C2 collision-search offload** | High | Med | A1 closed (TNFS/DLP only, not c100 — honest correction); the collision-search GPU offload is the real polyselect win |
 | 4 | **E2/E3** autotuner + planner ✓ DONE | Med | Low | UX + cuts variance; no raw speed |
-| 5 | **A2** mixed-rep ECM | Med | Med | feeds C3 + CPU cofactor |
+| 5 | **A2** mixed-rep ECM ✓ DONE (CPU already upstream; GPU win validated) | Med | Med | feeds C3 + CPU cofactor |
 | 6 | **A3** parallel merge | Med | Med | cuts the high-variance filtering phase |
 | 7 | **D1** multi-GPU partition (real) | High | High | **the large-N / HPC win** (needs ≥2 GPUs) |
 | 8 | **B1/B2/B3** AVX-512 sieving + gf2x + IFMA | Med–High | Low | AVX-512-HW-only (SDE-correct, CI-perf) |

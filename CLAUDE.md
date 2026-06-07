@@ -119,6 +119,7 @@ Optimized for numbers > 85 digits; < 60 digits is unsupported. Strip small prime
 - `docs/gpu-cofactorization.md` — GPU ECM cofactorization: measured results + honest Amdahl analysis (+ 3.1.0 cofactor scale-out / product-tree designs).
 - `docs/gpu-prefactor.md` — (3.1.0) GPU pre-NFS ECM factoring front-end: why it sidesteps Amdahl, the multi-precision Montgomery ECM, measured CPU-vs-GPU.
 - `docs/gpu-linalg.md` — (3.1.0) GPU BWC SpMV backend + full vector residency: kernel, transfer analysis, at-scale sweep, multi-GPU partition + multi-node residency design.
+- `docs/gpu-ecm-mixedrep.md` — (3.2.0, A2) mixed-representation ECM: the CPU path already does it (upstream "mishmash"); a validated twisted-Edwards `a=−1` GPU stage-1 (bit-exact vs the ladder via the birational map) is ~1.5–2.9× the Montgomery ladder, growing with modulus width.
 - `docs/rust-orchestration.md` — the Phase-4 Rust client/server, the protocol, and the in-process swap.
 - `BENCHMARKS.md` — performance sweep + methodology.
 - Upstream: `@README` (build/run/distributed), `@README.dlp` (discrete log), `@README.Python` (orchestration internals).
