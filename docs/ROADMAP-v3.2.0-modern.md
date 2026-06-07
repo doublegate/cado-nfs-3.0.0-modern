@@ -165,10 +165,14 @@ degenerate path locally + on a multi-GPU cloud/CI runner; perf only from real HW
   unvalidated NVSHMEM code committed (needs CUDA-aware MPI + ≥2 GPUs/nodes); the
   single-rank degenerate path is the already-validated resident loop. See
   `docs/multinode-residency-d2.md`.
-- **D3. Cluster / HPC orchestration.** Promote `scripts/cluster-launch.sh` to a
-  real distributed driver: Slurm `sbatch` job arrays, GPU-aware client placement
-  (one rank per GPU), and fan-out of the *sieving* stage (the 90 %) through the
-  Rust work-unit server — the biggest practical lever.
+- **D3. Cluster / HPC orchestration.** ✓ **DONE.** `scripts/cluster-launch.sh` is
+  now a real distributed driver: Slurm **`--sbatch` job arrays** (one task/node,
+  `--gres`/`--partition`/`--time`), **GPU-aware placement** `--gpus-per-node N`
+  (one `CUDA_VISIBLE_DEVICES`-pinned client per GPU across SSH/srun/sbatch — one
+  rank per GPU), all fanning the *sieving* stage out through the Rust work-unit
+  server (cert-pinned). Validated locally (all modes via `--dry-run`; generated
+  sbatch script is valid bash; regressions preserved). Live multi-host fan-out
+  needs a real cluster + running server. See `docs/rust-orchestration.md`.
 
 ## Track E — UI/UX & orchestration
 

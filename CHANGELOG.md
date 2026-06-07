@@ -196,6 +196,29 @@ validated-at-degenerate-path code + design.
   belongs under DLP/exTNFS (A4), not the factorization track. `docs/ROADMAP-v3.2.0-modern.md`
   updated.
 
+### HPC orchestration (D3) — cluster sieving fan-out: sbatch job arrays + GPU-aware placement
+
+- **Promoted `scripts/cluster-launch.sh` to a real distributed driver.** 3.1.0
+  shipped SSH + interactive-`srun` client fan-out; D3 adds the two pieces a batch
+  HPC cluster needs:
+  - **Slurm `--sbatch` JOB ARRAY** mode: generates and submits an sbatch script
+    (`--array=0-(nodes-1)`, one task per node, optional `--partition`/`--time`/
+    `--gres=gpu:N`), each array task starting the per-node clients — for
+    non-interactive batch clusters (vs the existing `--slurm` srun that holds an
+    allocation). `--dry-run` prints the generated script instead of submitting.
+  - **GPU-aware placement** `--gpus-per-node N`: starts **one client pinned per
+    GPU** (`CUDA_VISIBLE_DEVICES=0..N-1`, unique `host.gpuJ` clientids) across SSH,
+    `srun` (`--gpus-per-task=1`), and `sbatch` (`--gres`) — the right placement for
+    GPU-prefactor / GPU-cofactor clients (one rank per GPU). All point at the same
+    work-unit server URL + cert pinning, so sieving fans out through the Rust
+    `cado-wu-server-rs` (or the Flask server) unchanged.
+- **Validated locally** (the orchestration logic, all modes): `bash -n` clean; the
+  generated sbatch script is itself valid bash (`bash -n`); GPU-aware SSH emits one
+  `CUDA_VISIBLE_DEVICES`-pinned client per GPU per host; `srun` adds
+  `--gpus-per-task=1`; plain SSH and `--stop` regressions preserved. The live
+  multi-host fan-out needs a real cluster + the running work-unit server (the 3.1.0
+  swap); the driver logic is exercised via `--dry-run`. See `docs/rust-orchestration.md`.
+
 ### GPU at scale (D2) — NVSHMEM/GPUDirect multi-node residency (HW-gated design)
 
 - **Design for keeping BWC vectors device-resident across the MPI grid.** 3.1.0
