@@ -1,0 +1,229 @@
+.\" cado-nfs.1 -- man page for the CADO-NFS top-level driver (cado-nfs-modern fork)
+.\" Roadmap E6 (v3.3.0-modern); see docs/usability-v330.md.
+.TH CADO\-NFS 1 "2026" "cado-nfs-modern 3.3.0" "CADO-NFS Manual"
+.SH NAME
+cado\-nfs.py \- factor an integer or compute a discrete logarithm with the Number Field Sieve
+.SH SYNOPSIS
+.B cado\-nfs.py
+.I N
+.RI [ key=value ...]
+.RI [ options ]
+.br
+.B cado\-nfs.py
+.I parameter_snapshot_file
+.RI [ options ]
+.SH DESCRIPTION
+.B CADO\-NFS
+is an implementation of the Number Field Sieve (NFS) for integer
+factorization and for discrete logarithms in prime fields and small-degree
+extensions. The Python driver
+.B cado\-nfs.py
+orchestrates the full pipeline \(em polynomial selection, lattice sieving,
+filtering (merge/purge), linear algebra (Block Wiedemann), and the algebraic
+square root \(em across one or many machines.
+.PP
+This is the
+.B cado\-nfs\-modern
+fork (internal version
+.BR 3.3.0\-modern ),
+a modernization and performance fork of upstream CADO-NFS 3.0.0. The NFS
+algorithms and parameters are unchanged from upstream; the fork adds GPU
+acceleration (cofactorization, linear algebra, polynomial selection),
+SIMD kernels, a Rust orchestration layer, and the operator-experience tooling
+described under
+.B OPTIONS
+and
+.BR ENVIRONMENT .
+.PP
+.B cado\-nfs.py
+deduces its compiled binary directory automatically; invoke it from the source
+root rather than calling stage binaries by path. It is optimized for numbers
+larger than 85 digits; inputs below 60 digits are unsupported \(em strip small
+factors (trial division, P\(+-1, ECM) first.
+.PP
+.B Argument-order quirk:
+.IR key=value
+parameters (and
+.IR N )
+must be contiguous and come
+.I before
+dashed flags, e.g.
+.RB ` "cado\-nfs.py N server.ssl=no \-t 4" '.
+.SH OPTIONS
+.SS Planning and status (no computation is run for the first three)
+.TP
+.B \-\-plan
+Estimate feasibility, a wall-time envelope, the per-phase split, a
+single-machine-vs-cluster recommendation, and GPU triage for
+.IR N ;
+print the plan and exit.
+.TP
+.B \-\-plan\-json
+As
+.BR \-\-plan ,
+but emit the plan as JSON.
+.TP
+.B \-\-doctor
+Run a side-effect-free preflight: check the build, GPU/CPU/SIMD capabilities,
+and disk/RAM headroom against the resource estimate for
+.IR N ,
+then print a report and a GO/NO-GO verdict. Use
+.B \-\-doctor\-json
+for machine-readable output. (v3.3.0-modern.)
+.TP
+.B \-\-suggest\-params
+Resolve the default parameter file for
+.IR N
+(interpolating between the nearest presets when no exact one exists), print it,
+and exit.
+.TP
+.B \-\-autotune
+Calibrate only the safe scheduling knobs (local client/thread layout, work-unit
+granularity) to this host. The number-theoretic bounds are never changed, so the
+result is identical; only how the work is chunked differs.
+.TP
+.B \-\-json\-status \fIFILE\fR
+Write a machine-readable run-status snapshot (phase, percent, ETA, work-unit
+counts, factors) to
+.IR FILE ,
+rewritten atomically as the run progresses.
+.TP
+.B \-\-progress
+Show a compact single-line progress indicator (phase, percent, ETA) on stderr.
+Pair with
+.B \-\-screenlog WARNING
+for a clean line.
+.TP
+.B \-\-host\-speed \fIFACTOR\fR
+Per-core speed of this host relative to the benchmark reference (1.0 = reference
+class), used to scale the
+.B \-\-plan
+estimate.
+.SS Resources and layout
+.TP
+.B \-t, \-\-server\-threads \fINCORES\fR
+Total threads (overrides tasks.threads).
+.I NCORES
+may be
+.BR all .
+.TP
+.B \-s, \-\-slaves \fIN\fR
+Number of local clients (aliases slaves.nrclients).
+.TP
+.B \-\-client\-threads \fIN\fR
+Threads per sieving / polynomial-selection job.
+.TP
+.B \-w, \-\-workdir \fIDIR\fR
+Working directory (created if absent; a temporary one is used otherwise).
+.TP
+.B \-p, \-\-parameters \fIFILE\fR
+Parameter file to use.
+.TP
+.B \-\-server
+Run a bare work-unit server; do not start any local clients.
+.SS Computation type
+.TP
+.B \-\-dlp\fR, \fB\-\-fact\fR, \fB\-\-cl
+Select discrete logarithm, factorization (default), or class-group computation.
+.TP
+.B \-gfpext \fIK\fR
+Degree of the finite-field extension (DLP only).
+.TP
+.B \-ell \fIL\fR
+The group order (DLP only; aliases ell).
+.SS GPU front-ends (need a \-DENABLE_GPU=ON build)
+.TP
+.B \-\-gpu\-prefactor
+Strip small/medium factors with GPU ECM before NFS. If
+.I N
+fully factors, NFS is skipped; otherwise NFS continues on the cofactor.
+Tunable via
+.BR \-\-gpu\-b1 ,
+.BR \-\-gpu\-b2 ,
+.BR \-\-gpu\-curves .
+.TP
+.B \-\-gpu\-polyselect
+.B EXPERIMENTAL:
+offload polynomial-selection collision search to the GPU. Produces a
+bit-identical polynomial set; size-gated, so it is a no-op (no regression) at
+small sizes and the win grows with
+.IR N .
+.SH ENVIRONMENT
+.TP
+.B CADO_DEBUG
+If set, keep all intermediate computation data instead of cleaning up.
+.TP
+.B CADO_NFS_MAX_THREADS
+Upper bound on threads CADO will use, regardless of \fB\-t\fR.
+.TP
+.B CADO_GPU_DEVICE
+CUDA device index for the GPU back-ends.
+.TP
+.B CADO_GPU_NPART
+Number of GPU partitions for the multi-GPU Block-Wiedemann SpMV (default 1).
+.TP
+.B CADO_GPU_SPMV
+Force the GPU SpMV kernel: \fBvec\fR (sub-warp, cache-resident) or \fBwarp\fR
+(latency-hiding). Omitted = adaptive dispatch.
+.TP
+.B CADO_GPU_VECRESIDENT\fR, \fBCADO_GPU_DEVCOMM
+Keep the Block-Wiedemann vectors resident on-device (\fB=1\fR) and run the 2D
+communication on-device, respectively.
+.TP
+.B CADO_GPU_POLYSELECT\fR, \fBCADO_GPU_POLYSELECT_ROOTS
+Enable GPU polynomial-selection collision offload; the \fB_ROOTS\fR variant
+additionally opts into the (measured-negative) GPU root-finding path.
+.TP
+.B CADO_GPU_LINGEN_NTT
+.B EXPERIMENTAL (v3.3.0-modern, DLP):
+use the GPU NTT path for the GF(p) lingen polynomial-matrix multiply.
+.TP
+.B CADO_RUST_WU_SERVER
+Path to the Rust work-unit server binary; when set, the Python driver launches it
+in place of the Flask server (the HTTP/JSON protocol is identical).
+.SH EXAMPLES
+.PP
+Factor a 59-digit number on four cores (a ~15 s smoke test):
+.PP
+.RS
+.nf
+cado\-nfs.venv/bin/python3 ./cado\-nfs.py \\
+  90377629292003121684002147101760858109247336549001090677693 \-t 4
+.fi
+.RE
+.PP
+Estimate cost without running, then check the environment:
+.PP
+.RS
+.nf
+\&./cado\-nfs.py <N> \-\-plan
+\&./cado\-nfs.py <N> \-\-doctor
+.fi
+.RE
+.PP
+Resume an interrupted run from its parameter snapshot:
+.PP
+.RS
+.nf
+\&./cado\-nfs.py /path/XXX.parameters_snapshot.YYY
+.fi
+.RE
+.SH FILES
+.TP
+.I parameters/
+Per-size parameter presets (c60, c90, ...).
+.TP
+.I build/<hostname>/
+Out-of-tree build directory (auto-detected).
+.TP
+.I misc/completions/
+Shell completions for bash, zsh, and fish.
+.SH SEE ALSO
+The bundled README, README.dlp (discrete logarithm), and README.Python
+(orchestration internals); the deep-dives under
+.IR docs/ ;
+and the project CHANGELOG.
+.SH AUTHORS
+Upstream CADO-NFS by the CADO-NFS development team (INRIA CARAMBA, LGPL-2.1+).
+The cado-nfs-modern fork adds the GPU/SIMD/Rust/UX work documented in
+.IR CHANGELOG.md .

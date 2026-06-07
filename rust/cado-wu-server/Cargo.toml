@@ -21,3 +21,5 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = "1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+# shell-completion generation for --completions (Roadmap E6); cached offline
+clap_complete = "4"

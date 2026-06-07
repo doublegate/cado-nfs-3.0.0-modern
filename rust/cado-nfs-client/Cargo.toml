@@ -25,6 +25,8 @@ sha2 = "0.10"
 sha3 = "0.10"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+# shell-completion generation for --completions (Roadmap E6); cached offline
+clap_complete = "4"
 # direct rustls (same 0.23 reqwest's rustls-tls pulls) for --certsha1 cert pinning
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # cado-nfs-monitor-rs only

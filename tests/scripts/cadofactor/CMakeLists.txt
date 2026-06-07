@@ -9,6 +9,8 @@ set(PYTHON_DOCTEST_SOURCES
     scripts/cadofactor/wudb.py
     scripts/cadofactor/toplevel.py
     scripts/cadofactor/planner.py
+    scripts/cadofactor/doctor.py
+    scripts/cadofactor/galois.py
 )
 
 foreach (doctest_source ${PYTHON_DOCTEST_SOURCES})

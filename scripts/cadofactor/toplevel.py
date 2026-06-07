@@ -853,6 +853,20 @@ class Cado_NFS_toplevel(object):
         #     If none there, create a temporary directory. Delete it at the
         #     end if the computation succeeds and CADO_DEBUG is unset
 
+        # --doctor / --doctor-json (Track E5): a side-effect-free preflight that
+        # needs only the host (N is optional, used to add the feasibility +
+        # resource estimate); handle it before anything requires a parameter file.
+        if getattr(self.args, "doctor", False) \
+                or getattr(self.args, "doctor_json", False):
+            self._emit_doctor()
+            raise SystemExit(0)
+
+        # --galois-detect POLYFILE (Track A5): analyse a polynomial for a field
+        # automorphism and recommend the --galois flag; needs only the file.
+        if getattr(self.args, "galois_detect", None):
+            self._emit_galois_detect(self.args.galois_detect)
+            raise SystemExit(0)
+
         if self.args.N:
             # --plan / --plan-json (Track E3): a planning aid that needs only N
             # and the host; it does not require a parameter file to exist, so
@@ -860,6 +874,14 @@ class Cado_NFS_toplevel(object):
             if getattr(self.args, "plan", False) \
                     or getattr(self.args, "plan_json", False):
                 self._emit_plan()
+                raise SystemExit(0)
+            # --suggest-slurm-config / --suggest-pbs-config (Track E8): a cluster
+            # submission-script template sized to N; needs only N + the host.
+            if getattr(self.args, "suggest_slurm_config", False):
+                self._emit_batch_config("slurm")
+                raise SystemExit(0)
+            if getattr(self.args, "suggest_pbs_config", False):
+                self._emit_batch_config("pbs")
                 raise SystemExit(0)
             if not self.args.parameters:
                 self.args.parameters = self.find_default_parameter_file()
@@ -892,6 +914,17 @@ class Cado_NFS_toplevel(object):
 
         if getattr(self.args, "autotune", False):
             self._apply_autotune()
+
+        # --checkpoint-interval (Track E7): surface the BWC krylov checkpoint
+        # cadence (tasks.linalg.bwc.interval) as a top-level knob. Smaller = more
+        # frequent linalg checkpoints = less lost work on an interrupt, at a small
+        # I/O cost. Only affects the linear-algebra phase; sieving resumes per
+        # work-unit from the DB regardless.
+        ci = getattr(self.args, "checkpoint_interval", None)
+        if ci is not None:
+            self.parameters.set_simple("tasks.linalg.bwc.interval", int(ci))
+            self.logger.info("--checkpoint-interval: BWC krylov checkpoints every "
+                             "%d iterations (tasks.linalg.bwc.interval)" % int(ci))
 
     def _host_profile(self):
         '''Detect this host's thread count and GPU presence for the planner /
@@ -931,6 +964,66 @@ class Cado_NFS_toplevel(object):
             print(json.dumps(plan, indent=2))
         else:
             print(planner.format_plan(plan))
+
+    def _emit_doctor(self):
+        '''Build and print the preflight doctor report, then return (caller
+        exits). N is optional; when present it adds feasibility + a resource
+        estimate. Side-effect-free.'''
+        from cadofactor import doctor
+        threads, gpu = self._host_profile()
+        try:
+            bindir = self.pathdict.get("lib") or self.pathdict.get("data")
+        except Exception:
+            bindir = None
+        report = doctor.run_doctor(
+            n=getattr(self.args, "N", None) or None,
+            threads=threads, host_speed=getattr(self.args, "host_speed", 1.0),
+            gpu_present=gpu, gpu_build=self._gpu_build_present(),
+            bindir=bindir, workdir=getattr(self.args, "workdir", None))
+        if getattr(self.args, "doctor_json", False):
+            import json
+            print(json.dumps(report, indent=2))
+        else:
+            print(doctor.format_doctor(report))
+
+    def _emit_galois_detect(self, polyfile):
+        '''Detect a field automorphism in a .poly file and recommend the matching
+        --galois flag (Track A5), then return (caller exits).'''
+        from cadofactor import galois
+        coeffs = galois.read_poly_file(polyfile)
+        if not coeffs:
+            print("# could not read algebraic polynomial (c0..cd) from %s"
+                  % polyfile)
+            return
+        found = galois.detect_automorphisms(coeffs)
+        print("# galois automorphism detection for %s" % polyfile)
+        print("#   algebraic poly degree: %d" % (len(coeffs) - 1))
+        if not found:
+            print("#   no CADO automorphism -- a generic polynomial; --galois "
+                  "would not help here (no-op).")
+            return
+        name, order = found[0]
+        others = ", ".join(n for n, _ in found[1:])
+        print("#   detected: %s (order %d -> up to %dx matrix/sieve reduction)%s"
+              % (name, order, order,
+                 (" [also: %s]" % others) if others else ""))
+        print("# add this to your run to exploit it:")
+        print("    --galois %s" % name)
+
+    def _emit_batch_config(self, scheduler):
+        '''Print a Slurm/PBS submission-script template sized to N (Track E8),
+        then return (caller exits).'''
+        import sys
+        threads, gpu = self._host_profile()
+        plan = planner.make_plan(n=self.args.N, threads=threads,
+                                 host_speed=getattr(self.args, "host_speed", 1.0),
+                                 gpu=gpu, gpu_build=self._gpu_build_present())
+        # repo root = the directory holding cado-nfs.py (this checkout).
+        repo = os.path.dirname(os.path.abspath(sys.argv[0])) or "/path/to/cado-nfs"
+        # bigger inputs -> suggest more nodes as a starting point.
+        nodes = 8 if plan["digits"] >= 130 else 4
+        print(planner.format_batch_script(plan, scheduler=scheduler,
+                                          nodes=nodes, repo=repo))
 
     def _apply_autotune(self):
         '''Calibrate the SAFE scheduling knobs to this host (Track E2). Reads the
@@ -1430,12 +1523,45 @@ class Cado_NFS_toplevel(object):
                                  " guarantee (see --plan-json for machine output).")
         parser.add_argument("--plan-json", action="store_true",
                             help="Like --plan, but emit the plan as JSON and exit.")
+        parser.add_argument("--doctor", action="store_true",
+                            help="Run a side-effect-free preflight: check the"
+                                 " build, CPU/SIMD, GPU, free RAM/disk, the Python"
+                                 " environment and any cluster schedulers against"
+                                 " the resource estimate for N (optional), then"
+                                 " print a report and a GO/NO-GO verdict and exit"
+                                 " without running anything.")
+        parser.add_argument("--doctor-json", action="store_true",
+                            help="Like --doctor, but emit the report as JSON.")
+        parser.add_argument("--galois-detect", metavar="POLYFILE",
+                            help="Analyse a CADO .poly file for a field"
+                                 " automorphism and print the matching --galois"
+                                 " flag (autom2.1/2.2/3.1/3.2/4.1/6.1) if any,"
+                                 " then exit. When present, the Galois quotient"
+                                 " shrinks the matrix and sieve region by up to the"
+                                 " automorphism order. Generic GNFS polynomials"
+                                 " have none (a correct no-op).")
+        parser.add_argument("--suggest-slurm-config", action="store_true",
+                            help="Print a ready-to-edit Slurm (sbatch) submission"
+                                 " script sized to N (walltime from the --plan"
+                                 " estimate), wrapping scripts/cluster-launch.sh"
+                                 " for the sieving-client fan-out, and exit.")
+        parser.add_argument("--suggest-pbs-config", action="store_true",
+                            help="Like --suggest-slurm-config, but emit a PBS"
+                                 " (qsub) submission script.")
         parser.add_argument("--host-speed", type=float, default=1.0,
                             metavar="FACTOR",
                             help="Per-core speed of this host relative to the"
                                  " benchmark reference (1.0 = reference class),"
                                  " used to scale the --plan estimate. Measure with"
                                  " bench/las-microbench.sh.")
+        parser.add_argument("--checkpoint-interval", type=int, metavar="ITERS",
+                            help="Linear-algebra (Block Wiedemann) checkpoint"
+                                 " cadence: krylov saves a recoverable V-vector"
+                                 " checkpoint every ITERS iterations (sets"
+                                 " tasks.linalg.bwc.interval; preset default ~2000)."
+                                 " Smaller loses less work on an interrupt, at a"
+                                 " small I/O cost. Sieving resumes per work-unit"
+                                 " from the DB independently of this.")
         parser.add_argument("--autotune", action="store_true",
                             help="Calibrate only the SAFE scheduling knobs to this"
                                  " host -- local client/thread layout"

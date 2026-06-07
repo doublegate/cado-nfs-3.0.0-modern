@@ -104,12 +104,23 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
  <tr><td>computation</td><td id="comp"></td></tr>
  <tr><td>input digits</td><td id="digits"></td></tr>
  <tr><td>work units</td><td id="wu"></td></tr>
- <tr><td>ETA</td><td id="eta"></td></tr>
+ <tr><td>ETA (server)</td><td id="eta"></td></tr>
+ <tr><td>ETA (trend)</td><td id="etatrend"></td></tr>
+ <tr><td>throughput</td><td id="tput"></td></tr>
  <tr><td>factors</td><td class="factors" id="factors"></td></tr>
  <tr><td>updated</td><td id="updated"></td></tr>
 </table>
 <script>
 function setText(id,v){document.getElementById(id).textContent=(v==null?"":v)}
+// Trailing-window ETA + throughput from the poll time-series (Roadmap E4);
+// the browser-side mirror of cado-nfs-monitor-rs's "trend" metrics.
+var hist=[];
+function fmtEta(m){
+ if(m<1.5) return (m*60).toFixed(0)+" s";
+ if(m<90) return m.toFixed(1)+" min";
+ if(m<2880) return (m/60).toFixed(1)+" h";
+ return (m/1440).toFixed(1)+" days";
+}
 async function poll(){
  try{
   const r=await fetch("status",{cache:"no-store"}); const s=await r.json();
@@ -125,6 +136,19 @@ async function poll(){
   setText("wu",(s.wu_done!=null&&s.wu_total)?s.wu_done+" / "+s.wu_total:"");
   setText("eta",s.eta); setText("updated",s.updated);
   setText("factors",s.factors?s.factors.join("  "):"");
+  const now=Date.now()/1000;
+  if(p!=null){
+   hist.push({t:now,p:p,wu:s.wu_done});
+   while(hist.length>2 && now-hist[0].t>120) hist.shift();
+   if(hist.length>=2){
+    const a=hist[0], b=hist[hist.length-1], dt=(b.t-a.t)/60;
+    if(dt>1e-6){
+     const rate=(b.p-a.p)/dt;
+     if(rate>1e-6) setText("etatrend",fmtEta((100-b.p)/rate)+"  ("+rate.toFixed(2)+" %/min)");
+     if(a.wu!=null&&b.wu!=null&&b.wu>=a.wu) setText("tput",((b.wu-a.wu)/dt).toFixed(1)+" work-units/min");
+    }
+   }
+  }
  }catch(e){setText("phase","(server unreachable)")}
 }
 poll(); setInterval(poll,2000);

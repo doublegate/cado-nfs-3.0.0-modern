@@ -573,10 +573,43 @@ struct Args {
     /// pin the server cert by sha1 fingerprint (sets CADO_NFS_CERTSHA1)
     #[arg(long)]
     certsha1: Option<String>,
+    /// print a shell completion script (bash|zsh|fish|...) to stdout and exit
+    #[arg(long, value_enum, exclusive = true)]
+    completions: Option<clap_complete::Shell>,
+}
+
+/// `--completions <shell>` (Roadmap E6): emit the script to stdout and exit,
+/// before clap's required-argument check runs (so it works standalone). Handles
+/// both `--completions bash` and `--completions=bash`.
+fn maybe_emit_completions() {
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        let val = if a == "--completions" {
+            it.next()
+        } else if let Some(v) = a.strip_prefix("--completions=") {
+            Some(v.to_string())
+        } else {
+            continue;
+        };
+        if let Some(v) = val {
+            use clap::{CommandFactory, ValueEnum};
+            if let Ok(shell) = clap_complete::Shell::from_str(&v, true) {
+                clap_complete::generate(
+                    shell,
+                    &mut Args::command(),
+                    "cado-nfs-client-rs",
+                    &mut std::io::stdout(),
+                );
+                std::process::exit(0);
+            }
+        }
+        return; // bad/missing value: let clap report it
+    }
 }
 
 fn parse_args() -> Result<Settings> {
     use clap::Parser;
+    maybe_emit_completions();
     let a = Args::parse();
     // TLS options are passed to the rest of the client via env vars, exactly as
     // the previous hand-rolled parser did.

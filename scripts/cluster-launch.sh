@@ -32,6 +32,10 @@
 #   scripts/cluster-launch.sh --server https://head:4242 --sbatch --nodes 8 \
 #       --gpus-per-node 4 --partition gpu --time 24:00:00
 #
+#   # PBS/Torque cluster: the same as a qsub job array (--partition is the queue):
+#   scripts/cluster-launch.sh --server https://head:4242 --pbs --nodes 8 \
+#       --gpus-per-node 4 --partition gpu --time 24:00:00
+#
 #   # stop everything started over SSH:
 #   scripts/cluster-launch.sh --hosts node01,node02 --stop
 #
@@ -44,6 +48,7 @@ HOSTS=""
 HOSTFILE=""
 SLURM=0
 SBATCH=0
+PBS=0
 NTASKS=0
 NODES=0
 GPUS_PER_NODE=0
@@ -59,7 +64,7 @@ DRYRUN=0
 EXTRA=()
 
 usage() {
-    sed -n '3,33p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,37p' "$0" | sed 's/^# \{0,1\}//'
     cat <<EOF
 
 Options:
@@ -77,11 +82,14 @@ Options:
                         array task per node, each starting the per-node clients).
                         Use --nodes for the array size; with --dry-run it prints
                         the generated script instead of submitting.
+  --pbs                 generate + submit a PBS/Torque qsub JOB ARRAY (batch;
+                        same shape as --sbatch). --partition is the queue (-q),
+                        --time is the walltime. --dry-run prints the script.
   --ntasks N            Slurm srun: number of client tasks (srun -n N)
-  --nodes N             sbatch: number of nodes = job-array size (default 1)
-  --partition P         sbatch: --partition
-  --time T              sbatch: --time (e.g. 24:00:00)
-  --job-name NAME       sbatch: job name (default cado-sieve)
+  --nodes N             sbatch/--pbs: number of nodes = job-array size (default 1)
+  --partition P         sbatch: --partition / PBS: queue (-q)
+  --time T              sbatch/--pbs: walltime (e.g. 24:00:00)
+  --job-name NAME       sbatch/--pbs: job name (default cado-sieve)
   --client-bin PATH     client binary path valid on the hosts
                         (default: this checkout's build .../cado-nfs-client-rs
                          or rust/target/release/cado-nfs-client-rs)
@@ -105,6 +113,7 @@ while [ $# -gt 0 ]; do
         --clients-per-host) CLIENTS_PER_HOST="$2"; shift 2;;
         --slurm) SLURM=1; shift;;
         --sbatch) SBATCH=1; shift;;
+        --pbs) PBS=1; shift;;
         --ntasks) NTASKS="$2"; shift 2;;
         --nodes) NODES="$2"; shift 2;;
         --gpus-per-node) GPUS_PER_NODE="$2"; shift 2;;
@@ -190,17 +199,23 @@ client_cmd() {  # client_cmd <cidprefix> <j>
     echo "${pin}nohup $CLIENT_BIN $cargs --clientid $cid >/tmp/cado-client-$cid.log 2>&1 &"
 }
 
+# emit the per-task client line for a job array; $1 = the scheduler's array-index
+# env var name (SLURM_ARRAY_TASK_ID or PBS_ARRAY_INDEX). $j and the index var are
+# expanded at job runtime, GPU-pinned via CUDA_VISIBLE_DEVICES when requested.
+array_body() {  # array_body <index-var-name>
+    local idx="$1"
+    if [ "$GPUS_PER_NODE" -gt 0 ]; then
+        echo '    CUDA_VISIBLE_DEVICES=$j nohup '"$CLIENT_BIN $cargs"' --clientid n${'"$idx"'}.gpu$j >/tmp/cado-client-n${'"$idx"'}.gpu$j.log 2>&1 &'
+    else
+        echo '    nohup '"$CLIENT_BIN $cargs"' --clientid n${'"$idx"'}.$j >/tmp/cado-client-n${'"$idx"'}.$j.log 2>&1 &'
+    fi
+}
+
 # ---- Slurm sbatch JOB ARRAY (batch; one array task per node) ----
 if [ "$SBATCH" -eq 1 ]; then
     [ "$NODES" -gt 0 ] || NODES=1
     arr_hi=$((NODES - 1))
-    # the per-client line, chosen at generation time by whether GPUs are pinned;
-    # $j and $SLURM_ARRAY_TASK_ID are expanded at job runtime (escaped here).
-    if [ "$GPUS_PER_NODE" -gt 0 ]; then
-        body='    CUDA_VISIBLE_DEVICES=$j nohup '"$CLIENT_BIN $cargs"' --clientid n${SLURM_ARRAY_TASK_ID}.gpu$j >/tmp/cado-client-n${SLURM_ARRAY_TASK_ID}.gpu$j.log 2>&1 &'
-    else
-        body='    nohup '"$CLIENT_BIN $cargs"' --clientid n${SLURM_ARRAY_TASK_ID}.$j >/tmp/cado-client-n${SLURM_ARRAY_TASK_ID}.$j.log 2>&1 &'
-    fi
+    body=$(array_body SLURM_ARRAY_TASK_ID)
     script=$(cat <<SB
 #!/usr/bin/env bash
 #SBATCH --job-name=$JOBNAME
@@ -228,6 +243,45 @@ SB
     printf '%s\n' "$script" > "$tmp"
     run "sbatch $tmp"
     echo "$PROG: submitted job array ($NODES node(s) x $per_node client(s)); script $tmp"
+    exit 0
+fi
+
+# ---- PBS/Torque qsub JOB ARRAY (batch; one array task per node) ----
+if [ "$PBS" -eq 1 ]; then
+    [ "$NODES" -gt 0 ] || NODES=1
+    arr_hi=$((NODES - 1))
+    body=$(array_body PBS_ARRAY_INDEX)
+    # PBS chunk request: one chunk per node; ncpus is advisory here (the clients
+    # are multi-threaded). --partition doubles as the PBS queue (-q).
+    sel="select=1:ncpus=8"
+    [ "$GPUS_PER_NODE" -gt 0 ] && sel="select=1:ncpus=8:ngpus=$GPUS_PER_NODE"
+    script=$(cat <<PB
+#!/usr/bin/env bash
+#PBS -N $JOBNAME
+#PBS -J 0-$arr_hi
+#PBS -l $sel
+${TIMELIMIT:+#PBS -l walltime=$TIMELIMIT}
+${PARTITION:+#PBS -q $PARTITION}
+# one array task per node; each starts $per_node client(s), GPU-pinned if requested.
+cd "\${PBS_O_WORKDIR:-.}"
+set -e
+for j in \$(seq 0 $((per_node - 1))); do
+$body
+done
+wait
+PB
+)
+    if [ "$DRYRUN" -eq 1 ]; then
+        echo "--- generated PBS script (--dry-run; not submitted) ---"
+        printf '%s\n' "$script"
+        echo "--- (submit with: qsub <this script>) ---"
+        exit 0
+    fi
+    command -v qsub >/dev/null || die "--pbs given but qsub not found"
+    tmp=$(mktemp /tmp/cado-pbs.XXXXXX.sh)
+    printf '%s\n' "$script" > "$tmp"
+    run "qsub $tmp"
+    echo "$PROG: submitted PBS job array ($NODES node(s) x $per_node client(s)); script $tmp"
     exit 0
 fi
 
