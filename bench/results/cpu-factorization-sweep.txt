@@ -1,0 +1,13 @@
+c60 wall=19.2s factors=375374866984187102441374459631 583082359429393580386133444189
+[32;1mInfo[0m:Complete Factorization / Discrete logarithm / Class group: Total cpu/elapsed time for entire Complete Factorization 39.95/18.7493
+---
+c70 wall=26.0s factors=24394358728652095811114966603964859 53421942946828367342663813524372171
+[32;1mInfo[0m:Complete Factorization / Discrete logarithm / Class group: Total cpu/elapsed time for entire Complete Factorization 87.53/25.4684
+---
+c80 wall=70.3s factors=1376440703356975137233690645197432789631 9967036348622122820389178243421886786543
+[32;1mInfo[0m:Complete Factorization / Discrete logarithm / Class group: Total cpu/elapsed time for entire Complete Factorization 379.12/70.1096
+---
+c90 wall=184.5s factors=329003738071068148116110812119025804445412143 907243092316215564187016798920346635335696641
+[32;1mInfo[0m:Complete Factorization / Discrete logarithm / Class group: Total cpu/elapsed time for entire Complete Factorization 1464.98/183.841
+---
+SWEEP_DONE

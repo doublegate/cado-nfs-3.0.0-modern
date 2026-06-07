@@ -41,6 +41,9 @@ __pycache__/
 /vpclmul-mul1n-test
 /vpclmul-muln-test
 /avx512-modinv
+# compiled outputs of the bench/harness/ header validators (sources kept)
+/bench/harness/hdrtest
+/bench/harness/hdrtest_pclmul
 
 # Profiling / PGO artifacts (gcc -fprofile-generate/-use, perf, gcov)
 *.gcda

@@ -1,0 +1,66 @@
+===== C1 gpu-spmv-bench (adaptive vec16) =====
+GF(2) sparse matrix x block-of-vectors (BWC SpMV) — RTX 3090 vs full CPU
+  [b64-S] n=800000 nnz=24004393 (avg 30/row): scalar PASS, warp PASS, vec16 PASS
+        GPU warp  32.82 | GPU vec16  43.47 Gnz/s (1.32x warp) | GPU scalar  10.61 | CPU(20 thr)  2.05 Gnz/s
+  [b64 ] n=2000000 nnz=60028095 (avg 30/row): scalar PASS, warp PASS, vec16 PASS
+        GPU warp  11.60 | GPU vec16  10.77 Gnz/s (0.93x warp) | GPU scalar   8.77 | CPU(20 thr)  0.75 Gnz/s
+  [b128] n=2000000 nnz=59981904 (avg 30/row): scalar PASS, warp PASS, vec16 PASS
+        GPU warp   8.35 | GPU vec16   8.40 Gnz/s (1.01x warp) | GPU scalar   4.98 | CPU(20 thr)  0.27 Gnz/s
+  [b256] n=500000 nnz=29990247 (avg 60/row): scalar PASS, warp PASS, vec16 PASS
+        GPU warp  11.80 | GPU vec16   8.97 Gnz/s (0.76x warp) | GPU scalar   5.34 | CPU(20 thr)  0.90 Gnz/s
+ALL PASS
+===== A2 gpu-ecm-edwards (mixed-rep) =====
+GPU mixed-rep ECM stage-1: twisted-Edwards a=-1 vs Montgomery ladder
+B1=2000, 303 prime powers, s has 2878 bits; ladder 11 mm/bit, Edwards dbl=8 add=9
+theory mm/bit: ladder 11.0 | Edwards-DA ~12.5 | wNAF4 ~9.8 (table 4 pts/thread)
+  [128-bit ] Edwards a=-1: DA match PASS(0/8192) wNAF4 match PASS(0/8192) host=dev PASS(0/512)
+       throughput: ladder 298877 c/s | Edwards-DA 518876 c/s (1.74x) | wNAF4 778325 c/s (2.60x)
+  [256-bit ] Edwards a=-1: DA match PASS(0/8192) wNAF4 match PASS(0/8192) host=dev PASS(0/512)
+       throughput: ladder 132415 c/s | Edwards-DA 116126 c/s (0.88x) | wNAF4 176843 c/s (1.34x)
+  [512-bit ] Edwards a=-1: DA match PASS(0/8192) wNAF4 match PASS(0/8192) host=dev PASS(0/512)
+       throughput: ladder 24405 c/s | Edwards-DA 46631 c/s (1.91x) | wNAF4 57699 c/s (2.36x)
+ALL PASS
+===== C3 gpu-batch-smooth =====
+GPU batch-smoothness leaf extraction (C3) — B=2^20, P has 1510928 bits
+  [128-bit ] leaf extract: smooth-part PASS (0/8192) classification PASS (0/8192); 4096 smooth/8192; 14.41 Mleaf/s
+       GPU leaf-extract 0.069 us/leaf (7 Mont-sq + gcd). For scale, a naive un-amortized P mod R is 170.8 us/leaf; the remainder TREE amortizes
+       that big-integer work to ~O(M(N)logN/n) but it stays CPU/GMP (arbitrary-precision) — the leaf stage is the only A2-arithmetic fit.
+  [256-bit ] leaf extract: smooth-part PASS (0/8192) classification PASS (0/8192); 4096 smooth/8192; 24.05 Mleaf/s
+       GPU leaf-extract 0.042 us/leaf (8 Mont-sq + gcd). For scale, a naive un-amortized P mod R is 170.8 us/leaf; the remainder TREE amortizes
+       that big-integer work to ~O(M(N)logN/n) but it stays CPU/GMP (arbitrary-precision) — the leaf stage is the only A2-arithmetic fit.
+  [512-bit ] leaf extract: smooth-part PASS (0/8192) classification PASS (0/8192); 4096 smooth/8192; 3.84 Mleaf/s
+       GPU leaf-extract 0.260 us/leaf (9 Mont-sq + gcd). For scale, a naive un-amortized P mod R is 170.8 us/leaf; the remainder TREE amortizes
+       that big-integer work to ~O(M(N)logN/n) but it stays CPU/GMP (arbitrary-precision) — the leaf stage is the only A2-arithmetic fit.
+ALL PASS
+===== C4 gpu-sieve-scatter =====
+GPU vs CPU sieve-scatter probe (C4). Updates/s for S[off]+=v, the core sieve op.
+region = bucket-region size (CPU sieve keeps it cache-resident by design).
+
+region        CPU 1-thread  CPU all-core    GPU atomic  GPU/CPU* GPUcoalesced
+(* GPU vs CPU all-core = the honest full-socket comparison)
+16KiB                482M        1082M        6960M     6.43x      14203M
+256KiB               583M         886M       34145M    38.54x      98779M
+4096KiB              326M         177M       14074M    79.59x      42790M
+65536KiB              70M         129M        2793M    21.73x      35060M
+
+CPU all-core = per-thread private regions (the siever's model, no atomics).
+GPU 'atomic' is the correct sieve op (conflict-bound); 'coalesced' is a
+non-sieve friendly upper bound. NB: GPU uses int cells (4B); the real sieve
+array is uint8 (no 8-bit GPU atomic) and the updates must also be GENERATED
+on-GPU (lattice arithmetic + bucket fill) — costs this probe excludes.
+===== B2 vpclmul-muln (SDE) =====
+VPCLMULQDQ gf2x small kernels vs scalar GF(2)[x] reference, 200000 trials:
+  mul2 (128x128): PASS (0 wrong)
+  mul3 (192x192): PASS (0 wrong)
+  mul4 (256x256): PASS (0 wrong)
+ALL PASS
+===== B3 ifma-gfp (SDE) =====
+IFMA GF(p) plain-representation ops (arith-modp compatible), 260-bit, 8-way:
+  plain_mul  (a*b mod p)        : PASS (0/32000 wrong)
+  dotprod    (sum a_i b_i mod p): PASS (0/32000 wrong)  [vec_add_dotprod shape, 12 terms]
+ALL PASS
+===== B1 avx512-modinv (SDE) =====
+AVX-512 16-way batched 32-bit modular inverse vs GMP, 640000 trials:
+  PASS (0 wrong)
+ALL PASS
+ALL_COLLECTED
