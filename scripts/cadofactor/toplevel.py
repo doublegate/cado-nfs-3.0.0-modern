@@ -13,7 +13,7 @@ import tempfile
 import argparse
 import shutil
 
-from cadofactor import wudb, cadotask, cadologger, cadoparams
+from cadofactor import wudb, cadotask, cadologger, cadoparams, planner
 from cadofactor.cadoutils import Algorithm, Computation
 
 
@@ -854,6 +854,13 @@ class Cado_NFS_toplevel(object):
         #     end if the computation succeeds and CADO_DEBUG is unset
 
         if self.args.N:
+            # --plan / --plan-json (Track E3): a planning aid that needs only N
+            # and the host; it does not require a parameter file to exist, so
+            # handle it before resolving one.
+            if getattr(self.args, "plan", False) \
+                    or getattr(self.args, "plan_json", False):
+                self._emit_plan()
+                raise SystemExit(0)
             if not self.args.parameters:
                 self.args.parameters = self.find_default_parameter_file()
                 self.using_default_parameter_file = True
@@ -882,6 +889,68 @@ class Cado_NFS_toplevel(object):
             self.parameters.readfile(self.args.parameters)
             if not self.parameters.get_or_set_default("N", 0):
                 raise ValueError("%s must define N" % self.args.parameters)
+
+        if getattr(self.args, "autotune", False):
+            self._apply_autotune()
+
+    def _host_profile(self):
+        '''Detect this host's thread count and GPU presence for the planner /
+        autotuner. -t/--server-threads, when an integer, overrides the detected
+        thread count (that is the count the run will actually use).'''
+        threads = planner.detect_threads()
+        t = getattr(self.args, "server_threads", None)
+        if t is not None:
+            try:
+                threads = max(1, int(t))
+            except (TypeError, ValueError):
+                pass  # "all" or unset -> keep the detected count
+        return threads, planner.detect_gpu()
+
+    def _gpu_build_present(self):
+        '''True if this build shipped the GPU front-end (so the plan can suggest
+        --gpu-prefactor / GPU linalg without over-promising).'''
+        try:
+            bindir = self.pathdict.get("lib") or self.pathdict.get("data")
+        except Exception:
+            bindir = None
+        # the GPU prefactor binary (target "gpu-prefactor") marks an ENABLE_GPU
+        # build; the .cu only compiles when -DENABLE_GPU=ON.
+        for cand in ("misc/gpu-prefactor", "gpu-prefactor"):
+            if bindir and os.path.exists(os.path.join(bindir, cand)):
+                return True
+        return False
+
+    def _emit_plan(self):
+        '''Build and print the factor plan, then return (caller exits).'''
+        threads, gpu = self._host_profile()
+        plan = planner.make_plan(n=self.args.N, threads=threads,
+                                 host_speed=getattr(self.args, "host_speed", 1.0),
+                                 gpu=gpu, gpu_build=self._gpu_build_present())
+        if getattr(self.args, "plan_json", False):
+            import json
+            print(json.dumps(plan, indent=2))
+        else:
+            print(planner.format_plan(plan))
+
+    def _apply_autotune(self):
+        '''Calibrate the SAFE scheduling knobs to this host (Track E2). Reads the
+        current (preset) granularity values so it only scales them, and applies
+        the overrides to self.parameters. Never touches lim*/lpb*/mfb*/I.'''
+        threads, _gpu = self._host_profile()
+
+        def _get(key):
+            try:
+                return self.parameters.get_or_set_default(key)
+            except KeyError:
+                return None
+
+        overrides = planner.autotune_overrides(_get, threads=threads)
+        self.logger.info("--autotune: calibrating scheduling for %d threads "
+                         "(number-theoretic bounds lim*/lpb*/mfb*/I unchanged):"
+                         % threads)
+        for key, value, reason in overrides:
+            self.parameters.set_simple(key, value)
+            self.logger.info("  %s = %s  (%s)" % (key, value, reason))
 
     def access_or_create_workdir_and_db(self):
         self.db = None
@@ -1352,6 +1421,29 @@ class Cado_NFS_toplevel(object):
                                  " (interpolating between the nearest presets if"
                                  " no exact one exists), print it, and exit"
                                  " without running the factorization.")
+        parser.add_argument("--plan", action="store_true",
+                            help="Estimate feasibility, a wall-time envelope, the"
+                                 " rough per-phase split, a single-machine-vs-"
+                                 "cluster recommendation and GPU triage for N on"
+                                 " this host, print the plan, and exit without"
+                                 " running anything. A planning aid, not a"
+                                 " guarantee (see --plan-json for machine output).")
+        parser.add_argument("--plan-json", action="store_true",
+                            help="Like --plan, but emit the plan as JSON and exit.")
+        parser.add_argument("--host-speed", type=float, default=1.0,
+                            metavar="FACTOR",
+                            help="Per-core speed of this host relative to the"
+                                 " benchmark reference (1.0 = reference class),"
+                                 " used to scale the --plan estimate. Measure with"
+                                 " bench/las-microbench.sh.")
+        parser.add_argument("--autotune", action="store_true",
+                            help="Calibrate only the SAFE scheduling knobs to this"
+                                 " host -- local client/thread layout"
+                                 " (slaves.nrclients) and work-unit granularity"
+                                 " (tasks.sieve.qrange, tasks.polyselect.adrange)."
+                                 " It never changes the number-theoretic bounds"
+                                 " (lim*/lpb*/mfb*/I), so the result is identical;"
+                                 " only how the work is chunked differs.")
         parser.add_argument(
             "options",
             metavar="OPTION",

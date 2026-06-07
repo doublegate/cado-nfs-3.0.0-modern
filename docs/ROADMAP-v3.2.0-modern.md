@@ -127,13 +127,20 @@ Building on 3.1.0's `--json-status`, `/status`, `/dashboard`, clap CLIs, and
 - **E1. Real web dashboard** — phase timeline, per-phase ETA, live throughput +
   GPU/CPU utilization graphs, work-unit/client map (extend `/dashboard` into an
   SPA over the `/status` history).
-- **E2. Per-machine parameter auto-tuner** — extend the 3.1.0 preset
-  *interpolation* into a calibration pass (micro-bench the host, tune
-  `lim*/lpb*/mfb*/I/qrange`) behind `--autotune`. Attacks the merge/sieve variance
-  seen in BENCHMARKS.
-- **E3. "Factor planner"** — given `N` (+ available HW/GPUs), estimate
-  feasibility, wall-time, and single-machine-vs-cluster strategy before
-  committing (BENCHMARKS projection model + `--gpu-prefactor` triage).
+- **E2. Per-machine parameter auto-tuner** ✓ **DONE.** `--autotune` calibrates the
+  **safe scheduling knobs** to the host — local client/thread layout
+  (`slaves.nrclients`) and work-unit granularity (`tasks.sieve.qrange`,
+  `tasks.polyselect.adrange`, bounded √(threads/20) scaling). It **deliberately
+  does not touch `lim*/lpb*/mfb*/I`** (the original framing): those set relation
+  yield + matrix structure, so retuning them risks altering/breaking the
+  factorization. Tuning only the *chunking* of identical work keeps `product == N`
+  by construction (verified on the c59 smoke). `scripts/cadofactor/planner.py`.
+- **E3. "Factor planner"** ✓ **DONE.** `--plan` / `--plan-json`: given `N` (+ the
+  host thread count, `--host-speed`, GPU presence/build), prints feasibility, a
+  wall-time envelope, the per-phase split, single-machine-vs-cluster strategy, and
+  `--gpu-prefactor` / GPU-linalg triage, then exits. Model anchored on the measured
+  BENCHMARKS c60–c90 sweep + the documented c100/c110 envelope, log-linear in
+  digits, Amdahl-scaled to thread count. Doctested (`test_python_planner`).
 - **E4. Checkpoint/resume + observability hardening** — robust mid-phase resume,
   structured JSON logs, optional OpenTelemetry metrics; container images
   (CUDA + CPU) and reproducible release artifacts.
@@ -158,7 +165,7 @@ Building on 3.1.0's `--json-status`, `/status`, `/dashboard`, clap CLIs, and
 | 1 | **C1** better SpMV kernel | Med | Low | measurable now; bigger at scale |
 | 2 | **C2** GPU polyselect | Med | Low–Med | **real single-machine win** (proven in msieve) |
 | 3 | ~~**A1** 3-D lattice sieving~~ → **C2 collision-search offload** | High | Med | A1 closed (TNFS/DLP only, not c100 — honest correction); the collision-search GPU offload is the real polyselect win |
-| 4 | **E2/E3** autotuner + planner | Med | Low | UX + cuts variance; no raw speed |
+| 4 | **E2/E3** autotuner + planner ✓ DONE | Med | Low | UX + cuts variance; no raw speed |
 | 5 | **A2** mixed-rep ECM | Med | Med | feeds C3 + CPU cofactor |
 | 6 | **A3** parallel merge | Med | Med | cuts the high-variance filtering phase |
 | 7 | **D1** multi-GPU partition (real) | High | High | **the large-N / HPC win** (needs ≥2 GPUs) |

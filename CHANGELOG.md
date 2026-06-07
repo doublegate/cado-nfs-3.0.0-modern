@@ -196,6 +196,41 @@ validated-at-degenerate-path code + design.
   belongs under DLP/exTNFS (A4), not the factorization track. `docs/ROADMAP-v3.2.0-modern.md`
   updated.
 
+### Orchestration/UX (E2/E3) — factor planner + per-host autotuner (DONE)
+
+- **`--plan` / `--plan-json` (E3, the "factor planner").** Given `N` and the
+  host's thread count, `cado-nfs.py --plan` prints a feasibility verdict, a
+  **wall-time envelope** (central + ±20 % NFS-variance band), the rough per-phase
+  split, a single-machine-vs-cluster recommendation, and **GPU triage**
+  (`--gpu-prefactor` first; GPU BWC linalg at large N) — then exits without
+  running anything. The model is anchored on the **measured** `BENCHMARKS.md`
+  numbers (c60 18.5 s, c70 27.2 s, c80 74.4 s, c90 197.9 s on the i9-10850K at 20
+  threads) plus the documented order-of-magnitude envelope (c100 ~10 min, c110
+  ~1 hr), interpolated log-linearly in digit count and Amdahl-scaled to the host's
+  thread count (parallel fraction 0.7). It reproduces the c90 anchor to the second
+  (3.3 min) and scales correctly with `-t` (55.8 s at c70/-t 8 vs 27 s at -t 20).
+  `--host-speed FACTOR` lets a user fold in a measured per-core speed; `<60` digits
+  is flagged TOO SMALL (use ECM/P±1), `≥130` flags distributed mode. Honest
+  throughout: clearly labelled an estimate, with the variance / unmeasured-per-core
+  caveats printed.
+- **`--autotune` (E2, the per-host tuner).** Calibrates **only the safe scheduling
+  knobs** to the detected host — the local client/thread layout
+  (`slaves.nrclients`, e.g. 2 clients × 2 threads on 4 cores) and the work-unit
+  *granularity* (`tasks.sieve.qrange`, `tasks.polyselect.adrange`, scaled by a
+  bounded √(threads/20) factor clamped to [0.5, 4×]). It **never touches the
+  number-theoretic bounds** (`lim*`/`lpb*`/`mfb*`/`I`), which determine relation
+  yield and matrix structure — so only the *chunking* of identical work changes and
+  `product == N` is preserved by construction. Verified end-to-end: the c59 smoke
+  with `--autotune -t 4` set nrclients=2, qrange 2000→1000, adrange 5000→2500,
+  logged "bounds unchanged", and returned the correct four prime factors in 15.2 s.
+- **New module `scripts/cadofactor/planner.py`** (no third-party deps,
+  side-effect-free): the estimator, the duration/feasibility formatting, host
+  detection (threads + GPU-present + GPU-build-present), and the autotune override
+  computation — all pure and **doctested** (registered as `test_python_planner`).
+  Wired into `toplevel.py` via the same print-and-exit pattern as `--suggest-params`
+  (plan handled before the parameter file is even resolved, since it needs only N);
+  `--autotune` applies after the parameter file is read.
+
 Post-`3.1.0-modern` housekeeping carried in this cycle (no code/behaviour change):
 
 - **Project renamed to `cado-nfs-modern`.** Both the local checkout and the
