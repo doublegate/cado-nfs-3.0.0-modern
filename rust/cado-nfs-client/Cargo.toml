@@ -29,9 +29,10 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 # direct rustls (same 0.23 reqwest's rustls-tls pulls) for --certsha1 cert pinning
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-# cado-nfs-monitor-rs only
-ratatui = "0.28"
-crossterm = "0.28"
+# cado-nfs-monitor-rs only. ratatui >= 0.30 pulls a patched lru (>= 0.16.3,
+# GHSA-rhfx-m35p-ff5j); crossterm tracks ratatui's version to avoid two copies.
+ratatui = "0.30"
+crossterm = "0.29"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
