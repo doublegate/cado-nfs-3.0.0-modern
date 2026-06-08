@@ -34,6 +34,7 @@ No third-party dependencies; import-safe and side-effect-free.
 import math
 import os
 import re
+import socket
 
 
 # -- reference machine (BENCHMARKS.md, CADO-NFS 3.x-modern) -------------------
@@ -527,3 +528,164 @@ def _scale_int(value, factor):
     if not re.fullmatch(r"\d+", s):
         return None
     return str(int(round(int(s) * factor)))
+
+
+# -- A7: data-driven host calibration + regression cost model ----------------
+#
+# The static wall model above is anchored on ONE reference box. Once a host has
+# accumulated real runs in ~/.cado-nfs/runs.db (Track E11), we can (a) back out
+# this host's per-core speed factor relative to the reference, and (b) fit a
+# log-linear cost model directly to the host's own measured runs -- so --plan
+# gets more accurate the more you run, *without* touching any number-theoretic
+# bound. This is purely a prediction refinement; it changes nothing about the
+# factorization itself.
+
+
+def _host_speed_from_run(digits, threads, elapsed):
+    """The per-core speed factor implied by a single recorded run: the factor by
+    which this host beat (>1) or lagged (<1) the reference model at that size and
+    thread count. ``host_speed`` divides the model wall, so invert that.
+
+    >>> # a run that exactly matches the reference model implies speed ~1.0
+    >>> ref = estimate_walltime(90, threads=20, host_speed=1.0)
+    >>> round(_host_speed_from_run(90, 20, ref), 3)
+    1.0
+    >>> # finishing in half the model time implies ~2x the per-core speed
+    >>> round(_host_speed_from_run(90, 20, ref / 2.0), 3)
+    2.0
+    """
+    model = estimate_walltime(digits, threads=threads, host_speed=1.0)
+    if elapsed and elapsed > 0:
+        return model / float(elapsed)
+    return None
+
+
+def calibrate_host_speed(db_path=None, host=None, rows=None):
+    """Back out this host's per-core speed factor (vs the reference box) from its
+    recorded runs. Returns ``(host_speed, n_samples)`` -- the geometric mean of
+    the per-run implied factors -- or ``None`` if there are no usable runs.
+
+    Geometric mean (not arithmetic) because the factor is multiplicative and we
+    want a ratio that is symmetric under "twice as fast" / "half as fast".
+
+    >>> # two synthetic runs, each implying ~2x speed -> calibrated ~2x
+    >>> r1 = {"digits": 60, "threads": 20,
+    ...       "elapsed": estimate_walltime(60, 20, 1.0) / 2}
+    >>> r2 = {"digits": 90, "threads": 20,
+    ...       "elapsed": estimate_walltime(90, 20, 1.0) / 2}
+    >>> hs, n = calibrate_host_speed(rows=[r1, r2])
+    >>> n, round(hs, 2)
+    (2, 2.0)
+    >>> calibrate_host_speed(rows=[]) is None
+    True
+    """
+    if rows is None:
+        try:
+            from cadofactor import runs as _runs
+            if host is None:
+                host = socket.gethostname()
+            rows = _runs.list_runs(db_path=db_path, host=host, state="done")
+        except Exception:
+            return None
+    factors = []
+    for r in rows or []:
+        d, t, e = r.get("digits"), r.get("threads"), r.get("elapsed")
+        if not d or not e:
+            continue
+        f = _host_speed_from_run(d, t or REF_THREADS, e)
+        if f and f > 0:
+            factors.append(f)
+    if not factors:
+        return None
+    logmean = sum(math.log(f) for f in factors) / len(factors)
+    return math.exp(logmean), len(factors)
+
+
+def regression_estimate(digits, db_path=None, host=None, rows=None,
+                        min_samples=3, min_spread=10):
+    """Empirical wall-time estimate (seconds) for ``digits`` on this host, fitted
+    by ordinary least squares to ``log(elapsed)`` vs ``digits`` over the host's
+    recorded runs (all normalised to the reference thread count first, so runs at
+    different ``-t`` are comparable). Returns a dict
+    ``{estimate, n_samples, r2, lo, hi, basis}`` or ``None`` when there is not
+    enough data.
+
+    Needs ``min_samples`` runs spanning at least ``min_spread`` digits to fit a
+    slope; with fewer/narrower data it falls back to applying the single
+    multiplicative :func:`calibrate_host_speed` correction to the static model
+    (``basis='calibrated'``), and ``None`` only when there are no runs at all.
+
+    >>> # a clean 2x-speed host across a digit range -> empirical ~= model/2
+    >>> rows = [{"digits": d, "threads": 20,
+    ...          "elapsed": estimate_walltime(d, 20, 1.0) / 2.0}
+    ...         for d in (60, 70, 80, 90, 100)]
+    >>> est = regression_estimate(90, rows=rows)
+    >>> est["n_samples"], est["basis"]
+    (5, 'regression')
+    >>> # the OLS line smooths the (non-perfectly-log-linear) anchors, so it is
+    >>> # close to model/2 but not exact; within the reported variance band
+    >>> ref_half = estimate_walltime(90, 20, 1.0) / 2.0
+    >>> abs(est["estimate"] - ref_half) / ref_half < 0.25
+    True
+    >>> est["r2"] > 0.97          # a clean 2x host fits tightly
+    True
+    >>> regression_estimate(90, rows=[]) is None
+    True
+    """
+    if rows is None:
+        try:
+            from cadofactor import runs as _runs
+            if host is None:
+                host = socket.gethostname()
+            rows = _runs.list_runs(db_path=db_path, host=host, state="done")
+        except Exception:
+            return None
+    # normalise each run to REF_THREADS so different -t are comparable: scale the
+    # measured wall by (model@its-threads / model@ref-threads).
+    pts = []
+    for r in rows or []:
+        d, t, e = r.get("digits"), r.get("threads"), r.get("elapsed")
+        if not d or not e or e <= 0:
+            continue
+        t = t or REF_THREADS
+        norm = float(e) * (estimate_walltime(d, REF_THREADS, 1.0)
+                           / estimate_walltime(d, t, 1.0))
+        pts.append((float(d), norm))
+    if not pts:
+        return None
+
+    spread = max(p[0] for p in pts) - min(p[0] for p in pts)
+    if len(pts) >= min_samples and spread >= min_spread:
+        # OLS on (digits, log(wall_at_ref_threads))
+        xs = [p[0] for p in pts]
+        ys = [math.log(p[1]) for p in pts]
+        n = len(pts)
+        mx = sum(xs) / n
+        my = sum(ys) / n
+        sxx = sum((x - mx) ** 2 for x in xs)
+        sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        b = sxy / sxx if sxx else 0.0
+        a = my - b * mx
+        pred_ref = math.exp(a + b * float(digits))
+        # R^2 in log space
+        ss_tot = sum((y - my) ** 2 for y in ys)
+        ss_res = sum((y - (a + b * x)) ** 2 for x, y in zip(xs, ys))
+        r2 = 1.0 - (ss_res / ss_tot) if ss_tot else 1.0
+        basis = "regression"
+        n_samp = n
+    else:
+        cal = calibrate_host_speed(rows=rows)
+        if cal is None:
+            return None
+        host_speed, n_samp = cal
+        pred_ref = estimate_walltime(digits, REF_THREADS, host_speed)
+        r2 = None
+        basis = "calibrated"
+    return {
+        "estimate": pred_ref,         # at REF_THREADS; caller can re-scale
+        "n_samples": n_samp,
+        "r2": round(r2, 3) if r2 is not None else None,
+        "lo": pred_ref * (1.0 - _VARIANCE),
+        "hi": pred_ref * (1.0 + _VARIANCE),
+        "basis": basis,
+    }

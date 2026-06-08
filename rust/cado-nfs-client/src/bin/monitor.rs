@@ -64,6 +64,9 @@ struct Snapshot {
     /// numeric work-unit progress (for the throughput estimate), if exposed
     wu_done: Option<i64>,
     wu_total: Option<i64>,
+    /// numeric phase position (for the per-phase ETA reset + overall ETA), E12
+    phase_index: Option<i64>,
+    phase_total: Option<i64>,
 }
 
 fn jstr(v: &Value, k: &str) -> Option<String> {
@@ -108,7 +111,9 @@ fn parse_snapshot(v: &Value) -> Snapshot {
         s.title = jstr(v, "name").unwrap_or_else(|| "cado-nfs".into());
         s.state = jstr(v, "state").unwrap_or_default();
         let mut phase = jstr(v, "phase").unwrap_or_default();
-        if let (Some(i), Some(t)) = (ji64(v, "phase_index"), ji64(v, "phase_total")) {
+        s.phase_index = ji64(v, "phase_index");
+        s.phase_total = ji64(v, "phase_total");
+        if let (Some(i), Some(t)) = (s.phase_index, s.phase_total) {
             phase = format!("[{i}/{t}] {phase}");
         }
         s.phase = phase;
@@ -160,6 +165,10 @@ fn fetch(client: &reqwest::blocking::Client, url: &str) -> Snapshot {
 struct Derived {
     pct_per_min: Option<f64>,
     eta_trend: Option<String>,
+    /// E12: ETA to finish *all* phases, extrapolated from the per-phase rate and
+    /// the phase position (assumes remaining phases cost ~like the current one --
+    /// coarse, but it gives an end-to-end number the per-phase ETA cannot).
+    eta_overall: Option<String>,
     wu_per_min: Option<f64>,
     cpu_pct: Option<f64>,
     gpu: Option<String>,
@@ -222,6 +231,9 @@ struct Telemetry {
     pts: VecDeque<(Instant, f64, Option<i64>)>, // (t, percent, wu_done)
     prev_cpu: Option<(u64, u64)>,
     window: Duration,
+    /// the phase the trend window belongs to; when it changes we clear the
+    /// window so the per-phase rate is not polluted by the phase transition (E12)
+    cur_phase: Option<i64>,
 }
 
 impl Telemetry {
@@ -230,6 +242,7 @@ impl Telemetry {
             pts: VecDeque::new(),
             prev_cpu: None,
             window: Duration::from_secs(120),
+            cur_phase: None,
         }
     }
 
@@ -237,6 +250,12 @@ impl Telemetry {
     /// the CPU-utilisation delta is taken over the poll interval).
     fn update(&mut self, snap: &Snapshot) -> Derived {
         let now = Instant::now();
+        // E12: a new phase resets percent to a fresh 0..100 scale, so drop the
+        // prior phase's samples -- otherwise the rate spans a discontinuity.
+        if snap.phase_index != self.cur_phase {
+            self.pts.clear();
+            self.cur_phase = snap.phase_index;
+        }
         if let Some(p) = snap.percent {
             self.pts.push_back((now, p, snap.wu_done));
             while self.pts.len() > 2 {
@@ -257,7 +276,18 @@ impl Telemetry {
                 let rate = (p1 - p0) / dt_min;
                 if rate > 1e-6 {
                     d.pct_per_min = Some(rate);
-                    d.eta_trend = Some(fmt_eta_mins((100.0 - p1).max(0.0) / rate));
+                    let phase_rem_min = (100.0 - p1).max(0.0) / rate;
+                    d.eta_trend = Some(fmt_eta_mins(phase_rem_min));
+                    // E12 overall ETA: time for this phase to finish, plus a flat
+                    // estimate for the phases still to come (each ~one phase's
+                    // worth at the current per-%-rate, i.e. 100/rate minutes).
+                    if let (Some(idx), Some(tot)) = (snap.phase_index, snap.phase_total) {
+                        let remaining_phases = (tot - idx).max(0) as f64;
+                        let per_phase_min = 100.0 / rate;
+                        d.eta_overall = Some(fmt_eta_mins(
+                            phase_rem_min + remaining_phases * per_phase_min,
+                        ));
+                    }
                 }
                 if let (Some(a), Some(b)) = (w0, w1) {
                     let dwu = (b - a) as f64;
@@ -333,16 +363,19 @@ fn draw(f: &mut Frame, url: &str, s: &Snapshot, d: &Derived) {
     if let Some(eta) = &s.eta {
         rows.push(Row::new(vec!["ETA (server)".to_string(), eta.clone()]));
     }
-    // Derived live metrics computed by the monitor itself (Roadmap E4).
+    // Derived live metrics computed by the monitor itself (Roadmap E4/E12).
     if let Some(eta) = &d.eta_trend {
         let rate = d
             .pct_per_min
             .map(|r| format!("  ({r:.2} %/min)"))
             .unwrap_or_default();
         rows.push(Row::new(vec![
-            "ETA (trend)".to_string(),
+            "ETA (phase)".to_string(),
             format!("{eta}{rate}"),
         ]));
+    }
+    if let Some(eta) = &d.eta_overall {
+        rows.push(Row::new(vec!["ETA (all phases)".to_string(), eta.clone()]));
     }
     if let Some(w) = d.wu_per_min {
         rows.push(Row::new(vec![

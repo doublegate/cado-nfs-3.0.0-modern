@@ -11,6 +11,9 @@ set(PYTHON_DOCTEST_SOURCES
     scripts/cadofactor/planner.py
     scripts/cadofactor/doctor.py
     scripts/cadofactor/galois.py
+    scripts/cadofactor/notify.py
+    scripts/cadofactor/runs.py
+    scripts/cadofactor/wizard.py
 )
 
 foreach (doctest_source ${PYTHON_DOCTEST_SOURCES})

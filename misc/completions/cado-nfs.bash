@@ -8,10 +8,10 @@ _cado_nfs_py()
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--autotune --checkpoint-interval --cl --client-threads --dlp --dlp-no-keep --doctor --doctor-json --ell --fact --filelog --galois-detect --gfpext --gpu-b1 --gpu-b2 --gpu-curves --gpu-polyselect --gpu-prefactor --help --host-speed --json-status --mysql --mysql-password --mysql-user --nfs --no-colors --parameters --plan --plan-json --progress --qs --screenlog --server --server-threads --slaves --suggest-params --suggest-pbs-config --suggest-slurm-config --verboseparam --wdir --workdir -cl -dlp -dlp-no-keep -ell -fact -gfpext -h -mysql -mysql-password -mysql-user -nfs -p -qs -s -t -w"
+    opts="--autotune --calibrate --checkpoint-interval --cl --client-threads --compare-runs --dlp --dlp-no-keep --doctor --doctor-json --ell --fact --filelog --galois-detect --gfpext --gpu-b1 --gpu-b2 --gpu-curves --gpu-polyselect --gpu-prefactor --help --host-speed --json-log --json-status --list-runs --mysql --mysql-password --mysql-user --nfs --no-colors --notify --parameters --plan --plan-json --progress --qs --screenlog --server --server-threads --slaves --suggest-params --suggest-pbs-config --suggest-slurm-config --verboseparam --wdir --wizard --workdir -cl -dlp -dlp-no-keep -ell -fact -gfpext -h -mysql -mysql-password -mysql-user -nfs -p -qs -s -t -w"
 
     case "$prev" in
-        --json-status|--parameters|--wdir|--workdir|-p|-w)
+        --galois-detect|--json-log|--json-status|--parameters|--wdir|--workdir|-p|-w)
             COMPREPLY=( $(compgen -f -- "$cur") )
             return 0 ;;
         --server-threads|-t)
@@ -24,7 +24,7 @@ _cado_nfs_py()
         return 0
     fi
     # Otherwise the user is typing N or a key=value option; offer files too.
-    COMPREPLY=( $(compgen -W "--autotune --checkpoint-interval --cl --client-threads --dlp --dlp-no-keep --doctor --doctor-json --ell --fact --filelog --galois-detect --gfpext --gpu-b1 --gpu-b2 --gpu-curves --gpu-polyselect --gpu-prefactor --help --host-speed --json-status --mysql --mysql-password --mysql-user --nfs --no-colors --parameters --plan --plan-json --progress --qs --screenlog --server --server-threads --slaves --suggest-params --suggest-pbs-config --suggest-slurm-config --verboseparam --wdir --workdir" -f -- "$cur") )
+    COMPREPLY=( $(compgen -W "--autotune --calibrate --checkpoint-interval --cl --client-threads --compare-runs --dlp --dlp-no-keep --doctor --doctor-json --ell --fact --filelog --galois-detect --gfpext --gpu-b1 --gpu-b2 --gpu-curves --gpu-polyselect --gpu-prefactor --help --host-speed --json-log --json-status --list-runs --mysql --mysql-password --mysql-user --nfs --no-colors --notify --parameters --plan --plan-json --progress --qs --screenlog --server --server-threads --slaves --suggest-params --suggest-pbs-config --suggest-slurm-config --verboseparam --wdir --wizard --workdir" -f -- "$cur") )
     return 0
 }
 complete -F _cado_nfs_py cado-nfs.py

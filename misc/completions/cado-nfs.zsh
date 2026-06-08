@@ -7,9 +7,11 @@
 _cado_nfs_py() {
   _arguments -s \
     '--autotune[Calibrate only the SAFE scheduling knobs to this host -- local client/]' \
+    '--calibrate[Back out this hosts per-core speed factor (vs the benchmark reference)]' \
     '--checkpoint-interval=[Linear-algebra (Block Wiedemann) checkpoint cadence: krylov saves a re]:value:' \
     '--cl[Run class group computation]' \
     '--client-threads=[Number of threads for sieving and polynomial selection jobs.]:value:' \
+    '--compare-runs=[Print a focused comparison of recorded runs and exit (Track E11). SPEC]:value:' \
     '--dlp[Run discrete logarithm computation]' \
     '--dlp-no-keep[Disable the feature that CADO_DEBUG is set by default in dlp mode]' \
     '--doctor[Run a side-effect-free preflight: check the build, CPU/SIMD, GPU, free]' \
@@ -17,7 +19,7 @@ _cado_nfs_py() {
     '--ell=[Aliases (and conflicts with) ell in parameter files]:value:' \
     '--fact[Run factorization computation]' \
     '--filelog=[Log file logging level, e.g.,  INFO/COMMAND/DEBUG]:value:' \
-    '--galois-detect=[Analyse a CADO .poly file for a field automorphism and print the match]:value:' \
+    '--galois-detect=[Analyse a CADO .poly file for a field automorphism and print the match]:file:_files' \
     '--gfpext=[Degree of the finite field extension (DLP only)]:value:' \
     '--gpu-b1=[GPU ECM stage-1 bound for --gpu-prefactor]:value:' \
     '--gpu-b2=[GPU ECM stage-2 bound (0 = 100*B1)]:value:' \
@@ -25,12 +27,15 @@ _cado_nfs_py() {
     '--gpu-polyselect[EXPERIMENTAL: offload polynomial-selection collision search to the GPU]' \
     '--gpu-prefactor[Before NFS, strip small/medium factors with GPU ECM (misc/gpu_prefacto]' \
     '--host-speed=[Per-core speed of this host relative to the benchmark reference (1.0 =]:value:' \
+    '--json-log=[Append a structured NDJSON event log (run_start / phase_start / run_fi]:file:_files' \
     '--json-status=[Write a machine-readable run-status snapshot (phase, percent, ETA, wor]:file:_files' \
+    '--list-runs[Print the local run history (~/.cado-nfs/runs.db; Track E11) as a tabl]' \
     '--mysql[Use a mysql db for tracking workunits etc]' \
     '--mysql-password=[Use a mysql db for tracking workunits etc]:value:' \
     '--mysql-user=[Use a mysql db for tracking workunits etc]:value:' \
     '--nfs[Use NFS and its variants]' \
     '--no-colors[Turn off colored output]' \
+    '--notify=[Send a completion/failure notification when the run finishes (Track E9]:value:' \
     '--parameters=[A file with the parameters to use]:file:_files' \
     '--plan[Estimate feasibility, a wall-time envelope, the rough per-phase split,]' \
     '--plan-json[Like --plan, but emit the plan as JSON and exit.]' \
@@ -45,6 +50,7 @@ _cado_nfs_py() {
     '--suggest-slurm-config[Print a ready-to-edit Slurm (sbatch) submission script sized to N (wal]' \
     '--verboseparam[Enable very verbose parameter parsing]' \
     '--wdir=[Aliases (and conflicts with) tasks.workdir. WORKDIR is created if it d]:file:_files' \
+    '--wizard[Interactive parameter wizard (Track E12): a few questions (size, threa]' \
     '--workdir=[Aliases (and conflicts with) tasks.workdir. WORKDIR is created if it d]:file:_files' \
     '-cl[Run class group computation]' \
     '-dlp[Run discrete logarithm computation]' \

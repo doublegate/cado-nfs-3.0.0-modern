@@ -24,8 +24,11 @@ Design notes
 import os
 import sys
 
-# Path-taking options get file completion in every shell.
-FILE_OPTS = {"--parameters", "-p", "--workdir", "--wdir", "-w", "--json-status"}
+# Path-taking options get file completion in every shell (E12: context-aware --
+# the file-valued flags complete real paths, not the flag list). --galois-detect
+# takes a .poly file; --json-log / --json-status take output files.
+FILE_OPTS = {"--parameters", "-p", "--workdir", "--wdir", "-w", "--json-status",
+             "--json-log", "--galois-detect"}
 # -t/--server-threads: a small curated value list ("all" + typical counts).
 THREADS_OPTS = {"--server-threads", "-t"}
 THREADS_VALUES = ["all", "1", "2", "4", "8", "16"]

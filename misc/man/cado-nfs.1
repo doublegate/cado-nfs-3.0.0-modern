@@ -1,6 +1,7 @@
 .\" cado-nfs.1 -- man page for the CADO-NFS top-level driver (cado-nfs-modern fork)
-.\" Roadmap E6 (v3.3.0-modern); see docs/usability-v330.md.
-.TH CADO\-NFS 1 "2026" "cado-nfs-modern 3.3.0" "CADO-NFS Manual"
+.\" Roadmap E6 (v3.3.0-modern) + E9-E12/A7 (v3.4.0-modern); see
+.\" docs/usability-v330.md and docs/usability-v340.md.
+.TH CADO\-NFS 1 "2026" "cado-nfs-modern 3.4.0" "CADO-NFS Manual"
 .SH NAME
 cado\-nfs.py \- factor an integer or compute a discrete logarithm with the Number Field Sieve
 .SH SYNOPSIS
@@ -148,6 +149,54 @@ offload polynomial-selection collision search to the GPU. Produces a
 bit-identical polynomial set; size-gated, so it is a no-op (no regression) at
 small sizes and the win grows with
 .IR N .
+.SS Monitoring, notifications & history (v3.4.0-modern)
+.TP
+.B \-\-notify \fICHANNELS\fR
+Send a completion/failure notification when the run finishes.
+.I CHANNELS
+is a comma-separated list of \fIkind\fR[=\fItarget\fR] entries:
+.BR desktop ,
+.BI ntfy= TOPIC ,
+.BI slack= WEBHOOK ,
+.BI discord= WEBHOOK ,
+.BI webhook= URL ,
+.BI email= ADDR .
+SMTP credentials and the ntfy server come from the \fB[notifications]\fR parameter
+block or \fBCADO_SMTP_*\fR/\fBCADO_NTFY_SERVER\fR environment variables, so secrets
+stay out of the committed parameter snapshot. A channel error is logged and
+skipped; it never affects the factorization.
+.TP
+.B \-\-json\-log \fIFILE\fR
+Append a structured NDJSON event log (\fBrun_start\fR / \fBphase_start\fR /
+\fBrun_finish\fR, one JSON object per line) to
+.IR FILE ,
+for \fBtail \-f | jq\fR, Grafana/Loki ingestion or post-hoc analysis. Independent
+of \fB\-\-json\-status\fR (a live snapshot).
+.TP
+.B \-\-list\-runs\fR, \fB\-\-compare\-runs \fISPEC\fR
+Print the local run history from \fB~/.cado\-nfs/runs.db\fR and exit.
+.I SPEC
+is empty (recent runs), a digit count (all runs at that size, with min/mean/max
+wall time), or two run ids \fIA\fB:\fIB\fR (a side-by-side comparison).
+.TP
+.B \-\-calibrate
+Back out this host's per-core speed factor (vs the benchmark reference) from its
+recorded runs and print the suggested \fB\-\-host\-speed\fR value plus a
+data-driven cost-model fit, then exit. Sharpens
+.B \-\-plan
+as the run history grows; it changes no number-theoretic bound.
+.TP
+.B \-\-wizard
+Interactive parameter wizard: a few questions (size, threads, GPU, notifications,
+single-machine vs cluster) then a ready-to-run command line and its rationale.
+Nothing runs until you copy the command.
+.PP
+The Flask and Rust work-unit servers also expose a Prometheus
+.B /metrics
+endpoint (run state, phase, percent, work-unit and elapsed gauges) alongside the
+existing \fB/status\fR and \fB/dashboard\fR; the live dashboard and
+.BR cado\-nfs\-monitor\-rs (1)
+show per-phase and all-phases ETAs.
 .SH ENVIRONMENT
 .TP
 .B CADO_DEBUG
@@ -208,6 +257,35 @@ Resume an interrupted run from its parameter snapshot:
 \&./cado\-nfs.py /path/XXX.parameters_snapshot.YYY
 .fi
 .RE
+.PP
+Run with a desktop + ntfy notification on completion and a structured event log
+(v3.4.0-modern):
+.PP
+.RS
+.nf
+\&./cado\-nfs.py <N> \-\-notify desktop,ntfy=my\-topic \\
+  \-\-json\-log run.ndjson \-t 8
+.fi
+.RE
+.PP
+Inspect the run history, then calibrate this host's plan estimate
+(v3.4.0-modern):
+.PP
+.RS
+.nf
+\&./cado\-nfs.py \-\-list\-runs
+\&./cado\-nfs.py \-\-compare\-runs 90
+\&./cado\-nfs.py \-\-calibrate
+.fi
+.RE
+.PP
+Let the wizard build a command line interactively (v3.4.0-modern):
+.PP
+.RS
+.nf
+\&./cado\-nfs.py \-\-wizard
+.fi
+.RE
 .SH FILES
 .TP
 .I parameters/
@@ -218,6 +296,10 @@ Out-of-tree build directory (auto-detected).
 .TP
 .I misc/completions/
 Shell completions for bash, zsh, and fish.
+.TP
+.I ~/.cado\-nfs/runs.db
+Local SQLite run history (\fB\-\-list\-runs\fR / \fB\-\-compare\-runs\fR /
+\fB\-\-calibrate\fR); override the path with \fBCADO_RUNS_DB\fR.
 .SH SEE ALSO
 The bundled README, README.dlp (discrete logarithm), and README.Python
 (orchestration internals); the deep-dives under

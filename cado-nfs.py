@@ -201,6 +201,52 @@ if __name__ == '__main__':
                 " it can be resumed with %s %s",
                 sys.argv[0], snapshot_filename)
 
+    # Run-status reporting + terminal-event hooks (Tracks 3.1 / E9 / E10 / E11).
+    # Configured *before* the GPU pre-factoring stage so the completion
+    # notification, the structured event log and the run-history record all fire
+    # even when the GPU stage fully factors N (it calls STATUS.finish and exits
+    # without entering the NFS path below).
+    _comp = parameters.myparams({"computation": ""}, "").get("computation")
+    try:
+        _Nval = int(parameters.get_or_set_default("N"))
+        _digits = len(str(_Nval))
+    except (ValueError, TypeError):
+        _Nval, _digits = None, None
+    try:
+        _threads = int(parameters.get_or_set_default("tasks.threads"))
+    except (KeyError, ValueError, TypeError):
+        _threads = None
+
+    # E9: build the notifier from --notify, drawing SMTP host/from and the ntfy
+    # server from the [notifications] block (secrets via env override it).
+    _notifier = None
+    if getattr(toplevel_params.args, "notify", None):
+        from cadofactor import notify as _notify
+        _ncfg = parameters.myparams({
+            "ntfy_server": "", "smtp_host": "", "smtp_port": "",
+            "smtp_user": "", "smtp_pass": "", "smtp_from": "", "smtp_ssl": "",
+        }, "notifications")
+        _ncfg = {k: v for k, v in _ncfg.items() if v != ""}
+        try:
+            _notifier = _notify.Notifier.from_args(
+                toplevel_params.args.notify, config=_ncfg, logger=logger)
+        except ValueError as _e:
+            logger.warning("--notify: %s", _e)
+
+    STATUS.configure(json_path=toplevel_params.args.json_status,
+                     progress=toplevel_params.args.progress,
+                     json_log=toplevel_params.args.json_log,
+                     name=name,
+                     computation=str(_comp) if _comp is not None else None,
+                     input_digits=_digits)
+    if _notifier is not None:
+        STATUS.add_finish_hook(_notifier.notify)
+    # E11: record every terminal run in ~/.cado-nfs/runs.db (best-effort; a DB
+    # error is swallowed by the finish-hook wrapper and never affects the run).
+    from cadofactor import runs as _runs
+    STATUS.add_finish_hook(
+        lambda ev, _n=_Nval, _t=_threads: _runs.record(ev, n=_n, threads=_t))
+
     # GPU pre-NFS factoring stage (Track 2.1): strip small/medium factors on the
     # GPU before NFS. If it fully factors N, skip NFS; if a composite cofactor
     # remains, finish it with a fresh cado-nfs.py run (which picks parameters for
@@ -245,6 +291,13 @@ if __name__ == '__main__':
                         continue
                     if _a.startswith("--gpu-") and "=" in _a:
                         continue
+                    # the top-level run owns the user-facing terminal event, so
+                    # don't let the cofactor sub-run notify or log again (E9/E10).
+                    if _a in ("--notify", "--json-log"):
+                        _skip = True
+                        continue
+                    if _a.startswith(("--notify=", "--json-log=")):
+                        continue
                     _sub.append(str(_cof) if _a == str(_N) else _a)
                 _r = subprocess.run(_sub, stdout=subprocess.PIPE, text=True)
                 _subfac = _r.stdout.split() if _r.returncode == 0 else []
@@ -274,19 +327,6 @@ if __name__ == '__main__':
     if toplevel_params.args.verboseparam:
         logger.info("Summary of all recognized parameters\n" +
                     factorjob.parameter_help)
-
-    # Optional run-status reporting (Track 3.1): --json-status / --progress.
-    # No-op unless one of those was given.
-    _comp = parameters.myparams({"computation": ""}, "").get("computation")
-    try:
-        _digits = len(str(int(parameters.get_or_set_default("N"))))
-    except (ValueError, TypeError):
-        _digits = None
-    STATUS.configure(json_path=toplevel_params.args.json_status,
-                     progress=toplevel_params.args.progress,
-                     name=name,
-                     computation=str(_comp) if _comp is not None else None,
-                     input_digits=_digits)
 
     try:
         factors = factorjob.run()

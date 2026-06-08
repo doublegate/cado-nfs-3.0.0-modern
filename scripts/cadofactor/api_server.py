@@ -105,7 +105,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
  <tr><td>input digits</td><td id="digits"></td></tr>
  <tr><td>work units</td><td id="wu"></td></tr>
  <tr><td>ETA (server)</td><td id="eta"></td></tr>
- <tr><td>ETA (trend)</td><td id="etatrend"></td></tr>
+ <tr><td>ETA (phase)</td><td id="etatrend"></td></tr>
+ <tr><td>ETA (all phases)</td><td id="etaall"></td></tr>
  <tr><td>throughput</td><td id="tput"></td></tr>
  <tr><td>factors</td><td class="factors" id="factors"></td></tr>
  <tr><td>updated</td><td id="updated"></td></tr>
@@ -114,7 +115,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 function setText(id,v){document.getElementById(id).textContent=(v==null?"":v)}
 // Trailing-window ETA + throughput from the poll time-series (Roadmap E4);
 // the browser-side mirror of cado-nfs-monitor-rs's "trend" metrics.
-var hist=[];
+var hist=[]; var curPhase=null;
 function fmtEta(m){
  if(m<1.5) return (m*60).toFixed(0)+" s";
  if(m<90) return m.toFixed(1)+" min";
@@ -137,6 +138,9 @@ async function poll(){
   setText("eta",s.eta); setText("updated",s.updated);
   setText("factors",s.factors?s.factors.join("  "):"");
   const now=Date.now()/1000;
+  // E12: a new phase restarts percent at 0..100, so clear the window on a phase
+  // change -- the per-phase rate must not span the discontinuity.
+  if(s.phase_index!==curPhase){ hist=[]; curPhase=s.phase_index; }
   if(p!=null){
    hist.push({t:now,p:p,wu:s.wu_done});
    while(hist.length>2 && now-hist[0].t>120) hist.shift();
@@ -144,7 +148,15 @@ async function poll(){
     const a=hist[0], b=hist[hist.length-1], dt=(b.t-a.t)/60;
     if(dt>1e-6){
      const rate=(b.p-a.p)/dt;
-     if(rate>1e-6) setText("etatrend",fmtEta((100-b.p)/rate)+"  ("+rate.toFixed(2)+" %/min)");
+     if(rate>1e-6){
+      const phaseRem=(100-b.p)/rate;
+      setText("etatrend",fmtEta(phaseRem)+"  ("+rate.toFixed(2)+" %/min)");
+      // overall ETA: this phase, plus the remaining phases at ~one phase each.
+      if(s.phase_index&&s.phase_total){
+       const remP=Math.max(0,s.phase_total-s.phase_index);
+       setText("etaall",fmtEta(phaseRem+remP*(100/rate)));
+      }
+     }
      if(a.wu!=null&&b.wu!=null&&b.wu>=a.wu) setText("tput",((b.wu-a.wu)/dt).toFixed(1)+" work-units/min");
     }
    }
@@ -506,6 +518,7 @@ recent than 3.1.3) fixes this.
         self.route("/files")(self.api_list_all_files)
         self.route("/upload", methods=["POST"])(self.api_upload_file)
         self.route("/status")(self.api_status)
+        self.route("/metrics")(self.api_metrics)
         self.route("/dashboard")(self.api_dashboard)
 
     def api_errorhandler(self, e):
@@ -566,6 +579,17 @@ recent than 3.1.3) fixes this.
         """
         from cadofactor.status import STATUS
         return flask.json.jsonify(STATUS.snapshot()), 200
+
+    def api_metrics(self):
+        """
+        Prometheus metrics (Track E10): the same live run status rendered in the
+        text-exposition format, for scraping into Grafana / alerting. All gauges;
+        the run state is a labelled enum gauge (``cado_nfs_state``). Always
+        available (the status singleton tracks in memory regardless of flags).
+        """
+        from cadofactor.status import STATUS
+        return flask.Response(STATUS.prometheus(),
+                              mimetype="text/plain; version=0.0.4")
 
     def api_dashboard(self):
         """

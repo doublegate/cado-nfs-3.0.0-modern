@@ -119,6 +119,7 @@ async fn main() -> Result<()> {
         .route("//upload", post(upload))
         .route("/control", post(control))
         .route("/status", get(status))
+        .route("/metrics", get(metrics))
         .fallback(fallback_404)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -361,6 +362,69 @@ async fn status(State(s): State<Arc<AppState>>) -> Response {
         "percent": (percent * 10.0).round() / 10.0,
     }))
     .into_response()
+}
+
+// GET /metrics -- Prometheus text exposition (Track E10). The server owns the
+// wudb, so it exports live work-unit gauges by status plus the serving flag, for
+// Grafana / alerting. The Python driver's /metrics adds the phase/ETA gauges the
+// server cannot see; the two are complementary.
+async fn metrics(State(s): State<Arc<AppState>>) -> Response {
+    let Ok(conn) = s.pool.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "db unavailable").into_response();
+    };
+    let count = |st: i64| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM workunits WHERE status=?1",
+            [st],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    };
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM workunits", [], |r| r.get(0))
+        .unwrap_or(0);
+    let available = count(AVAILABLE);
+    let assigned = count(ASSIGNED);
+    let ok = count(RECEIVED_OK);
+    let error = count(RECEIVED_ERROR);
+    let done = ok + error;
+    let percent = if total > 0 {
+        (done as f64) * 100.0 / (total as f64)
+    } else {
+        0.0
+    };
+    let serving = if s.serving.load(Ordering::Relaxed) {
+        1
+    } else {
+        0
+    };
+    let body = format!(
+        "# HELP cado_wu_up The cado-wu-server is live.\n\
+         # TYPE cado_wu_up gauge\n\
+         cado_wu_up 1\n\
+         # HELP cado_wu_serving Whether the server is still serving work-units.\n\
+         # TYPE cado_wu_serving gauge\n\
+         cado_wu_serving {serving}\n\
+         # HELP cado_wu_workunits Work-units by status.\n\
+         # TYPE cado_wu_workunits gauge\n\
+         cado_wu_workunits{{status=\"total\"}} {total}\n\
+         cado_wu_workunits{{status=\"available\"}} {available}\n\
+         cado_wu_workunits{{status=\"assigned\"}} {assigned}\n\
+         cado_wu_workunits{{status=\"ok\"}} {ok}\n\
+         cado_wu_workunits{{status=\"error\"}} {error}\n\
+         cado_wu_workunits{{status=\"done\"}} {done}\n\
+         # HELP cado_wu_percent Percent of work-units completed.\n\
+         # TYPE cado_wu_percent gauge\n\
+         cado_wu_percent {percent:.1}\n"
+    );
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        body,
+    )
+        .into_response()
 }
 
 // POST /control -- finish or resume serving work-units. Guarded by --admin-token

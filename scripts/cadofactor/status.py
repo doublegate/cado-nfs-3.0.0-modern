@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import threading
+import time
 import datetime
 
 
@@ -31,6 +32,12 @@ class _Reporter:
         self._progress = False
         self._stderr_isatty = False
         self._enabled = False
+        # v3.4.0 Track E9/E10/E11: terminal-event finish hooks (each a callable
+        # taking the final state dict -- used by the notifier and the run-history
+        # recorder) and an NDJSON structured event log.
+        self._finish_hooks = []
+        self._json_log_path = None
+        self._started_mono = None
         self._state = {
             "schema": "cado-nfs-status/1",
             "state": "starting",       # starting | running | done | error
@@ -45,17 +52,28 @@ class _Reporter:
             "wu_done": None,
             "wu_total": None,
             "factors": None,
+            "elapsed": None,           # wall seconds at finish (E9/E10)
             "started": None,           # ISO8601
             "updated": None,           # ISO8601
         }
 
     # -- configuration (called once, from cado-nfs.py) -----------------------
 
+    def add_finish_hook(self, hook):
+        """Register a callable invoked with the final state dict when the run
+        reaches a terminal state (Track E9 notifier, E11 run recorder). Hooks are
+        best-effort: an exception in one never breaks the run or the others."""
+        if hook is not None:
+            with self._lock:
+                self._finish_hooks.append(hook)
+
     def configure(self, json_path=None, progress=False, name=None,
-                  computation=None, input_digits=None):
+                  computation=None, input_digits=None, json_log=None):
         with self._lock:
             self._json_path = json_path
             self._progress = bool(progress)
+            self._json_log_path = json_log
+            self._started_mono = time.monotonic()
             self._stderr_isatty = bool(getattr(sys.stderr, "isatty",
                                                lambda: False)())
             self._enabled = bool(json_path) or self._progress
@@ -69,6 +87,9 @@ class _Reporter:
             })
             if self._enabled:
                 self._flush_locked()
+            self._log_event_locked("run_start", {
+                "name": name, "computation": computation,
+                "input_digits": input_digits})
 
     def is_enabled(self):
         return self._enabled
@@ -91,6 +112,8 @@ class _Reporter:
                 "wu_total": None,
             })
             self._flush_locked()
+            self._log_event_locked("phase_start", {
+                "phase": title, "phase_index": index, "phase_total": total})
 
     def update_progress(self, percent=None, eta=None, wu_done=None,
                         wu_total=None):
@@ -111,18 +134,33 @@ class _Reporter:
 
     def finish(self, factors=None, state="done"):
         with self._lock:
+            elapsed = (time.monotonic() - self._started_mono
+                       if self._started_mono is not None else None)
             self._state.update({
                 "state": state,
                 "factors": list(factors) if factors is not None else None,
                 "phase": "complete" if state == "done" else self._state["phase"],
                 "phase_percent": 100.0 if state == "done" else
                                  self._state["phase_percent"],
+                "elapsed": round(elapsed, 1) if elapsed is not None else None,
             })
             self._flush_locked()
             if self._progress:
                 # leave the final line on screen
                 sys.stderr.write("\n")
                 sys.stderr.flush()
+            self._log_event_locked("run_finish", {
+                "state": state, "elapsed": self._state["elapsed"],
+                "factors": self._state["factors"]})
+            # E9/E11: fire the terminal-event hooks (notifier, run recorder). A
+            # hook failure must never break a completed factorization, so each is
+            # isolated. Snapshot is passed by value.
+            final = dict(self._state)
+            for hook in self._finish_hooks:
+                try:
+                    hook(final)
+                except Exception:
+                    pass
 
     # -- output --------------------------------------------------------------
 
@@ -132,6 +170,21 @@ class _Reporter:
             self._write_json_locked()
         if self._progress:
             self._write_progress_line_locked()
+
+    def _log_event_locked(self, event_type, fields):
+        """Append one NDJSON event line to the structured event log (Track E10),
+        if --json-log is configured. Best-effort: a log error never breaks a run.
+        Each line is a self-contained object with an ISO8601 ``ts`` and ``event``
+        type, suitable for ``tail -f | jq`` or shipping to a log pipeline."""
+        if not self._json_log_path:
+            return
+        rec = {"ts": self._now(), "event": event_type}
+        rec.update({k: v for k, v in fields.items() if v is not None})
+        try:
+            with open(self._json_log_path, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except OSError:
+            pass
 
     def _write_json_locked(self):
         try:
@@ -175,6 +228,54 @@ class _Reporter:
         """Return a copy of the current status dict (for an in-process reader)."""
         with self._lock:
             return dict(self._state)
+
+    def prometheus(self):
+        """Render the current status as a Prometheus text-exposition string
+        (Track E10), served at ``/metrics`` on both work-unit servers for
+        Grafana/alerting. All gauges; the run state is a labelled enum gauge so a
+        single ``cado_nfs_state`` series tracks starting/running/done/error."""
+        s = self.snapshot()
+        out = [
+            "# HELP cado_nfs_up The cado-nfs status reporter is live.",
+            "# TYPE cado_nfs_up gauge",
+            "cado_nfs_up 1",
+            "# HELP cado_nfs_state Current run state (1 for the active label).",
+            "# TYPE cado_nfs_state gauge",
+        ]
+        cur = s.get("state") or "starting"
+        for st in ("starting", "running", "done", "error"):
+            out.append('cado_nfs_state{state="%s"} %d' % (st, 1 if st == cur
+                                                          else 0))
+
+        def _g(name, value, help_text):
+            if value is None:
+                return
+            try:
+                v = float(value)
+            except (TypeError, ValueError):
+                return
+            out.append("# HELP %s %s" % (name, help_text))
+            out.append("# TYPE %s gauge" % name)
+            out.append("%s %g" % (name, v))
+
+        _g("cado_nfs_input_digits", s.get("input_digits"),
+           "Decimal digit count of the input N.")
+        _g("cado_nfs_phase_index", s.get("phase_index"),
+           "1-based index of the current phase.")
+        _g("cado_nfs_phase_total", s.get("phase_total"),
+           "Total number of phases.")
+        _g("cado_nfs_phase_percent", s.get("phase_percent"),
+           "Completion percent within the current phase (0-100).")
+        _g("cado_nfs_wu_done", s.get("wu_done"),
+           "Work-units completed in the current phase.")
+        _g("cado_nfs_wu_total", s.get("wu_total"),
+           "Estimated work-units for the current phase.")
+        _g("cado_nfs_elapsed_seconds", s.get("elapsed"),
+           "Wall-clock seconds at terminal state.")
+        factors = s.get("factors")
+        _g("cado_nfs_factors_total", len(factors) if factors else None,
+           "Number of factors found (terminal state).")
+        return "\n".join(out) + "\n"
 
 
 # process-wide singleton

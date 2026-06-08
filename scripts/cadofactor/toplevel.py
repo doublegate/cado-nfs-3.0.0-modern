@@ -867,6 +867,26 @@ class Cado_NFS_toplevel(object):
             self._emit_galois_detect(self.args.galois_detect)
             raise SystemExit(0)
 
+        # --list-runs / --compare-runs (Track E11): query the local run-history
+        # DB and exit; needs only ~/.cado-nfs/runs.db, no N or parameter file.
+        if getattr(self.args, "list_runs", False):
+            self._emit_runs(None)
+            raise SystemExit(0)
+        if getattr(self.args, "compare_runs", None) is not None:
+            self._emit_runs(self.args.compare_runs)
+            raise SystemExit(0)
+
+        # --calibrate (Track A7): derive this host's speed factor + cost-model fit
+        # from ~/.cado-nfs/runs.db and exit; needs only the run history.
+        if getattr(self.args, "calibrate", False):
+            self._emit_calibrate()
+            raise SystemExit(0)
+
+        # --wizard (Track E12): interactive parameter wizard; needs only the host.
+        if getattr(self.args, "wizard", False):
+            self._emit_wizard()
+            raise SystemExit(0)
+
         if self.args.N:
             # --plan / --plan-json (Track E3): a planning aid that needs only N
             # and the host; it does not require a parameter file to exist, so
@@ -959,11 +979,72 @@ class Cado_NFS_toplevel(object):
         plan = planner.make_plan(n=self.args.N, threads=threads,
                                  host_speed=getattr(self.args, "host_speed", 1.0),
                                  gpu=gpu, gpu_build=self._gpu_build_present())
+        # A7: if this host has recorded runs, fold in a data-driven empirical
+        # estimate alongside the static model (does not replace it -- both are
+        # shown, the empirical one clearly labelled with its sample count).
+        emp = self._empirical_estimate(plan["digits"], threads)
+        if emp is not None:
+            plan["empirical"] = emp
         if getattr(self.args, "plan_json", False):
             import json
             print(json.dumps(plan, indent=2))
         else:
             print(planner.format_plan(plan))
+            if emp is not None:
+                print("\nEmpirical refinement (Track A7, from %d recorded run(s)"
+                      " on this host, %s fit): %s  [%s - %s]"
+                      % (emp["n_samples"], emp["basis"], emp["estimate_human"],
+                         emp["lo_human"], emp["hi_human"]))
+
+    def _empirical_estimate(self, digits, threads):
+        '''Return a host-specific empirical wall estimate (Track A7) re-scaled to
+        ``threads``, or None if there is too little run history. Pure read of
+        ~/.cado-nfs/runs.db; never raises.'''
+        try:
+            est = planner.regression_estimate(digits)
+        except Exception:
+            return None
+        if est is None:
+            return None
+        # regression_estimate is at REF_THREADS; re-scale to this host's threads.
+        ref = planner.estimate_walltime(digits, planner.REF_THREADS, 1.0)
+        here = planner.estimate_walltime(digits, threads, 1.0)
+        scale = here / ref if ref else 1.0
+        for k in ("estimate", "lo", "hi"):
+            est[k] = est[k] * scale
+            est[k + "_human"] = planner._fmt_duration(est[k])
+        return est
+
+    def _emit_wizard(self):
+        '''Run the interactive parameter wizard (Track E12), then return (caller
+        exits).'''
+        from cadofactor import wizard
+        threads, gpu = self._host_profile()
+        wizard.run_wizard(detected_threads=threads, gpu_present=gpu,
+                          gpu_build=self._gpu_build_present())
+
+    def _emit_calibrate(self):
+        '''Print this host's data-driven speed factor + cost-model fit from the
+        run history (Track A7), then return (caller exits).'''
+        cal = planner.calibrate_host_speed()
+        if cal is None:
+            print("# no completed runs recorded for this host yet"
+                  " (~/.cado-nfs/runs.db).")
+            print("# run a factorization or two, then --calibrate learns this"
+                  " host's per-core speed and sharpens --plan.")
+            return
+        host_speed, n = cal
+        print("# host calibration from %d recorded run(s) (Track A7):" % n)
+        print("#   per-core speed vs the benchmark reference: %.3fx" % host_speed)
+        print("# pass this to size future plans to your machine:")
+        print("    --host-speed %.3f" % host_speed)
+        # show the regression fit quality at a representative size if we can.
+        est = planner.regression_estimate(90)
+        if est is not None and est["basis"] == "regression":
+            r2 = est["r2"]
+            print("# cost-model fit: log-linear regression on your runs"
+                  " (R^2 = %s over %d samples)"
+                  % ("%.3f" % r2 if r2 is not None else "n/a", est["n_samples"]))
 
     def _emit_doctor(self):
         '''Build and print the preflight doctor report, then return (caller
@@ -1009,6 +1090,16 @@ class Cado_NFS_toplevel(object):
                  (" [also: %s]" % others) if others else ""))
         print("# add this to your run to exploit it:")
         print("    --galois %s" % name)
+
+    def _emit_runs(self, compare_spec):
+        '''Print the local run history (--list-runs) or a focused comparison
+        (--compare-runs SPEC) from ~/.cado-nfs/runs.db (Track E11), then return
+        (caller exits).'''
+        from cadofactor import runs
+        if compare_spec is None:
+            print(runs.format_runs(runs.list_runs()))
+        else:
+            print(runs.compare_runs(compare_spec))
 
     def _emit_batch_config(self, scheduler):
         '''Print a Slurm/PBS submission-script template sized to N (Track E8),
@@ -1562,6 +1653,21 @@ class Cado_NFS_toplevel(object):
                                  " Smaller loses less work on an interrupt, at a"
                                  " small I/O cost. Sieving resumes per work-unit"
                                  " from the DB independently of this.")
+        parser.add_argument("--wizard", action="store_true",
+                            help="Interactive parameter wizard (Track E12): a few"
+                                 " questions (size, threads, GPU, notifications,"
+                                 " single-machine vs cluster) then prints a ready-"
+                                 " to-run command line and the rationale. Nothing"
+                                 " runs until you copy the command. Reuses the"
+                                 " --plan feasibility/cluster/GPU triage.")
+        parser.add_argument("--calibrate", action="store_true",
+                            help="Back out this host's per-core speed factor (vs"
+                                 " the benchmark reference) from its recorded runs"
+                                 " in ~/.cado-nfs/runs.db (Track A7), print the"
+                                 " suggested --host-speed value and a data-driven"
+                                 " cost-model fit, then exit. The more runs you"
+                                 " have logged, the sharper the --plan estimate;"
+                                 " it changes no number-theoretic bound.")
         parser.add_argument("--autotune", action="store_true",
                             help="Calibrate only the SAFE scheduling knobs to this"
                                  " host -- local client/thread layout"
@@ -1684,6 +1790,33 @@ class Cado_NFS_toplevel(object):
                  "percent, ETA) on stderr. Pair with --screenlog WARNING for "
                  "a clean line.",
             action='store_true')
+        parser.add_argument(
+            "--notify", metavar="CHANNELS",
+            help="Send a completion/failure notification when the run finishes "
+                 "(Track E9). CHANNELS is a comma-separated list of "
+                 "kind[=target] channels: desktop, ntfy=TOPIC, slack=WEBHOOK, "
+                 "discord=WEBHOOK, webhook=URL, email=ADDR. SMTP credentials and "
+                 "the ntfy server come from the [notifications] parameter block "
+                 "or CADO_SMTP_*/CADO_NTFY_SERVER env (secrets stay out of the "
+                 "committed parameter snapshot). A channel error is logged and "
+                 "skipped; it never affects the factorization.")
+        parser.add_argument(
+            "--json-log", metavar="FILE",
+            help="Append a structured NDJSON event log (run_start / phase_start "
+                 "/ run_finish, one JSON object per line) to FILE (Track E10), "
+                 "for 'tail -f | jq', Grafana/Loki ingestion or post-hoc "
+                 "analysis. Independent of --json-status (which is a live "
+                 "snapshot); off unless given.")
+        parser.add_argument(
+            "--list-runs", action="store_true",
+            help="Print the local run history (~/.cado-nfs/runs.db; Track E11) "
+                 "as a table and exit. Each completed run records N, size, "
+                 "computation, host, threads, wall time and outcome.")
+        parser.add_argument(
+            "--compare-runs", metavar="SPEC",
+            help="Print a focused comparison of recorded runs and exit "
+                 "(Track E11). SPEC is empty (the most recent runs), a digit "
+                 "count (all runs at that size), or two run ids 'A:B'.")
         parser.add_argument(
             "--gpu-prefactor",
             help="Before NFS, strip small/medium factors with GPU ECM "
