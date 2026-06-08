@@ -66,3 +66,35 @@ shows the apply *can* be faster on raw throughput; translating that into a stage
 win needs the whole sieve resident on-device across the candidate tree (large-N
 only). Recorded as such; the stage-1↔stage-2 threshold in `ropt_param.cpp` is
 unchanged.
+
+## C5+ (v3.4.0-modern) — the conditional-launch threshold
+
+C5 left the GPU root-sieve kernel correct but a wash at desktop-testable sizes:
+shipping it unconditionally would *regress* small/medium runs. C5+ closes that
+with a cheap, calibrated launch heuristic
+(`bench/gpu-ropt-threshold-c5plus.cu`): predict the crossover from the problem
+dimensions and run the GPU path **only above it**, the CPU loop below — unlocking
+the kernel at large N with no small-N regression.
+
+The heuristic is a work-volume threshold with a line-length floor — the same
+predicate `ropt_stage2.cpp` would call before deciding to offload:
+
+```c
+should_use_gpu(work, L) := work >= 100M scatter-updates  AND  L >= 8M cells
+```
+
+Measured RTX-3090 sweep (bit-exact at every size; "match" = the heuristic does
+not route to the slower path):
+
+| line L (cells) | scatter work | CPU (ms) | GPU (ms) | faster | heuristic |
+|---:|---:|---:|---:|:--:|:--:|
+| 65 536 | 0.8 M | 0.40 | 12.1 | CPU | CPU ✓ |
+| 262 144 | 3.2 M | 2.5 | 52.4 | CPU | CPU ✓ |
+| 1 048 576 | 13 M | 10.3 | 197 | CPU | CPU ✓ |
+| 4 194 304 | 52 M | 48.9 | 108 | CPU | CPU ✓ |
+| 16 777 216 | 208 M | 1490 | 385 | **GPU (3.9×)** | GPU ✓ |
+
+The crossover sits at ~16 M-cell lines / ~2×10⁸ scatter updates — quantitatively
+confirming C5's "large-N only" conclusion. **Honest scope:** the heuristic does
+not make the GPU win at small sizes; it routes each size to the measured-faster
+path. Validate with `bench/gpu-research-v340-validate.sh`.
