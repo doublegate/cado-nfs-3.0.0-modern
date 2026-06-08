@@ -8,54 +8,59 @@ logarithms in finite fields.
 
 > **What this fork is.** It rebases the upstream 3.0.0 codebase onto a current
 > bleeding-edge toolchain (**CMake 4.x, GCC 16, CUDA 13, Python 3.14**) and adds
-> several tracks of *rigorously measured* performance and orchestration work.
-> From **3.1.0-modern** the fork carries its own minor line — still upstream
-> 3.0.0's NFS algorithms, numerics, and parameters (**unchanged**), the bump
-> reflecting substantial original work. **3.2.0-modern** continues that, aiming
-> the GPU + algorithm effort where the cost actually is (sieving and polynomial
-> selection, ~91 % of an RSA-250-scale run): a **validated GPU mixed-representation
-> (twisted-Edwards) ECM** (~1.5–2.9× the Montgomery ladder), **GPU
-> polynomial-selection collision offload**, an **adaptive GPU SpMV** kernel,
-> **AVX-512 VPCLMULQDQ `mul2/3/4` + IFMA GF(p) + batched modular-inverse** kernels
-> (all SDE-validated), real **multi-GPU partition** (per-device streams, `product
-> == N` at scale) with a **multi-node NVSHMEM/GPUDirect design**, **cluster sieving
-> orchestration** (Slurm job arrays, GPU-aware placement), and a **factor planner +
-> per-host autotuner** — on top of the 3.1.0 GPU-linalg / GPU-prefactor / AVX-512 /
-> orchestration tracks and the 3.0.0-modern build/SIMD/GPU-cofactor/Rust base.
-> **3.3.0-modern** opens on the honest premise the fork has now confirmed three
-> times — single-machine NFS *speed* is essentially tapped out on this hardware —
-> and pivots accordingly: a shippable **operator-experience core** (a live
-> dashboard + trend-ETA, a **`--doctor`** preflight, shell completions + man pages,
-> checkpoint/resume clarity, **Slurm/PBS** integration), the fork's **first
-> measured-on-silicon SIMD** kernel (**AVX2 batched modular inverse, ~4.6×**,
-> bit-exact), **Galois-automorphism auto-detection** (a genuine, measurable algo
-> win), plus an honestly-gated GPU/DLP research track (GPU root-sieve, GPU GF(p)
-> lingen NTT, IFMA→arith-modp routing, an exTNFS skeleton) — each a validated,
-> measured kernel reported with its honest non-win where it is one.
-> **3.4.0-modern** keeps that shape and lands the one materially new opportunity the
-> codebase exploration surfaced: the GPU pre-NFS factoring front-end is the **one
-> stage with no Amdahl ceiling**, so it gets the cycle's **headline measured win** —
-> GPU **Pollard P-1 / Williams P+1** beside the batched ECM, on the bit-exact
-> Montgomery core, with an adaptive escalating-B1 schedule (**14/14 bit-exact vs
-> GMP, ~3.3× faster time-to-strip** on a P±1-smooth factor). Around it ships a real
-> **observability/usability core** — completion **notifications** (ntfy / Slack /
-> Discord / webhook / email / desktop), a structured **JSON event log** + a
-> Prometheus **`/metrics`** endpoint on both servers, a **multi-run history DB**
-> (`--list-runs` / `--compare-runs`), **per-phase + all-phases ETA**, a **`--wizard`**
-> parameter TUI — plus a **data-driven autotuner** (`--calibrate` + a regression
-> cost model on the run history that sharpens `--plan`, number-theoretic bounds
-> untouched), and the carry-forward research track (GPU root-sieve launch threshold
-> C5+, GPU GF(p) lingen NTT multi-modular CRT C6+).
-> Every change is gated on `make check` + verified `product == N` (or a bit-exact /
-> SDE validation); hardware-blocked items (multi-GPU/multi-node, AVX-512 perf) ship
-> as documented designs or correctness-validated kernels, not unvalidated claims.
-> Results are reported honestly, including the parts that did **not** pay off and
-> the work that turned out **already optimal upstream**.
+> several tracks of *rigorously measured* performance and orchestration work. From
+> **3.1.0-modern** the fork carries its own minor line — still upstream 3.0.0's NFS
+> algorithms, numerics, and parameters (**unchanged**), the bump reflecting
+> substantial original work. The per-cycle arc:
 >
-> This is **not** the official CADO-NFS. For releases, ongoing development, and
-> support, use the upstream project (links at the bottom). Earlier releases are
-> preserved under their tags: `2.3.1-modern`, `v3.0.0-modern`, `v3.1.0-modern`,
-> `v3.2.0-modern`, `v3.3.0-modern`.
+> - **3.2.0-modern** aims the GPU + algorithm effort where the cost actually is
+>   (sieving and polynomial selection, ~91 % of an RSA-250-scale run): a
+>   **validated GPU mixed-representation (twisted-Edwards) ECM** (~1.5–2.9× the
+>   Montgomery ladder), **GPU polynomial-selection collision offload**, an
+>   **adaptive GPU SpMV** kernel, **AVX-512 VPCLMULQDQ `mul2/3/4` + IFMA GF(p) +
+>   batched modular-inverse** kernels (all SDE-validated), real **multi-GPU
+>   partition** (per-device streams, `product == N` at scale) with a **multi-node
+>   NVSHMEM/GPUDirect design**, **cluster sieving orchestration** (Slurm job arrays,
+>   GPU-aware placement), and a **factor planner + per-host autotuner** — on top of
+>   the 3.1.0 GPU-linalg / GPU-prefactor / AVX-512 / orchestration tracks and the
+>   3.0.0-modern build/SIMD/GPU-cofactor/Rust base.
+> - **3.3.0-modern** opens on the honest premise the fork has now confirmed three
+>   times — single-machine NFS *speed* is essentially tapped out on this hardware —
+>   and pivots accordingly: a shippable **operator-experience core** (a live
+>   dashboard + trend-ETA, a **`--doctor`** preflight, shell completions + man
+>   pages, checkpoint/resume clarity, **Slurm/PBS** integration), the fork's
+>   **first measured-on-silicon SIMD** kernel (**AVX2 batched modular inverse,
+>   ~4.6×**, bit-exact), **Galois-automorphism auto-detection** (a genuine,
+>   measurable algo win), plus an honestly-gated GPU/DLP research track (GPU
+>   root-sieve, GPU GF(p) lingen NTT, IFMA→arith-modp routing, an exTNFS skeleton)
+>   — each a validated, measured kernel reported with its honest non-win where it
+>   is one.
+> - **3.4.0-modern** keeps that shape and lands the one materially new opportunity
+>   the codebase exploration surfaced: the GPU pre-NFS factoring front-end is the
+>   **one stage with no Amdahl ceiling**, so it gets the cycle's **headline measured
+>   win** — GPU **Pollard P-1 / Williams P+1** beside the batched ECM, on the
+>   bit-exact Montgomery core, with an adaptive escalating-B1 schedule (**14/14
+>   bit-exact vs GMP, ~3.3× faster time-to-strip** on a P±1-smooth factor). Around
+>   it ships a real **observability/usability core** — completion **notifications**
+>   (ntfy / Slack / Discord / webhook / email / desktop), a structured **JSON event
+>   log** + a Prometheus **`/metrics`** endpoint on both servers, a **multi-run
+>   history DB** (`--list-runs` / `--compare-runs`), **per-phase + all-phases ETA**,
+>   a **`--wizard`** parameter TUI — plus a **data-driven autotuner** (`--calibrate`
+>   + a regression cost model on the run history that sharpens `--plan`,
+>   number-theoretic bounds untouched), and the carry-forward research track (GPU
+>   root-sieve launch threshold C5+, GPU GF(p) lingen NTT multi-modular CRT C6+).
+>
+> **How it's gated.** Every change is gated on `make check` + verified
+> `product == N` (or a bit-exact / SDE validation); hardware-blocked items
+> (multi-GPU/multi-node, AVX-512 perf) ship as documented designs or
+> correctness-validated kernels, not unvalidated claims. Results are reported
+> honestly, including the parts that did **not** pay off and the work that turned
+> out **already optimal upstream**.
+>
+> **Not the official CADO-NFS.** For releases, ongoing development, and support, use
+> the upstream project (links at the bottom). Earlier releases are preserved under
+> their tags: `2.3.1-modern`, `v3.0.0-modern`, `v3.1.0-modern`, `v3.2.0-modern`,
+> `v3.3.0-modern`.
 
 [![CI](https://github.com/doublegate/cado-nfs-modern/actions/workflows/ci.yml/badge.svg)](https://github.com/doublegate/cado-nfs-modern/actions/workflows/ci.yml)
 [![AVX-512 validation](https://github.com/doublegate/cado-nfs-modern/actions/workflows/avx512-validate.yml/badge.svg)](https://github.com/doublegate/cado-nfs-modern/actions/workflows/avx512-validate.yml)
